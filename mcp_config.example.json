@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ppt_study_reader": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/server/index.mjs", "--data-dir=${PLUGIN_DATA}"],
+      "env": {
+        "PPT_COURSE_DIR": "/path/to/your/course-ppt-folder",
+        "PPT_ANNOTATIONS_PATH": "/path/to/your/course-ppt-folder/标注版PPT/study_annotations.json"
+      }
+    }
+  }
+}

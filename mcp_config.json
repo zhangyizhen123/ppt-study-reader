@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "ppt_study_reader": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/server/index.mjs", "--data-dir=${PLUGIN_DATA}"],
+      "env": {
+        "PPT_COURSE_DIR": "",
+        "PPT_ANNOTATIONS_PATH": ""
+      }
+    }
+  }
+}

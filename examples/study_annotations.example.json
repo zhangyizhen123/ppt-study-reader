@@ -1,0 +1,69 @@
+{
+  "courseDir": "/path/to/your/course-ppt-folder",
+  "annotatedDir": "/path/to/your/course-ppt-folder/标注版PPT",
+  "generatedAt": "2026-09-01T00:00:00Z",
+  "totalPages": 6,
+  "summary": { "high": 3, "medium": 2, "low": 1 },
+  "decks": [
+    {
+      "file": "01-课程导论与核心概念.pdf",
+      "title": "01 课程导论与核心概念",
+      "day": 1,
+      "pageCount": 3,
+      "summary": { "high": 1, "medium": 1, "low": 1 },
+      "pages": [
+        {
+          "page": 1,
+          "priority": "low",
+          "tag": "封面",
+          "title": "第1章 课程导论",
+          "tip": "课程封面与主讲信息，直接翻过"
+        },
+        {
+          "page": 2,
+          "priority": "high",
+          "tag": "核心概念",
+          "title": "核心定义与基本模型",
+          "tip": "必看：先建立全书核心框架与术语直觉，期末常考概念辨析"
+        },
+        {
+          "page": 3,
+          "priority": "medium",
+          "tag": "示例推导",
+          "title": "基础应用案例",
+          "tip": "看懂大致解题思路即可，不必死记中间数字"
+        }
+      ]
+    },
+    {
+      "file": "02-核心原理与典型例题.pdf",
+      "title": "02 核心原理与典型例题",
+      "day": 2,
+      "pageCount": 3,
+      "summary": { "high": 2, "medium": 1, "low": 0 },
+      "pages": [
+        {
+          "page": 1,
+          "priority": "high",
+          "tag": "必考公式",
+          "title": "核心定理与计算公式",
+          "tip": "重点记忆公式成立前提与各符号单位，结合下页例题练习"
+        },
+        {
+          "page": 2,
+          "priority": "high",
+          "tag": "典型例题",
+          "title": "课堂综合例题",
+          "tip": "遮住答案自己手算一遍，最容易在单位换算和边界条件丢分"
+        },
+        {
+          "page": 3,
+          "priority": "medium",
+          "tag": "拓展比较",
+          "title": "不同方案优缺点对比",
+          "tip": "记住各自适用场景与主要优缺点即可"
+        }
+      ]
+    }
+  ]
+}
