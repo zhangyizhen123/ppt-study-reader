@@ -5,12 +5,12 @@ description: >-
   final-exam cramming or preview study pack: extracts all slide outlines,
   generates per-page high/medium/low priority annotations (`study_annotations.json`),
   produces non-destructive offline annotated PDFs (`标注版PPT/`), and launches the
-  interactive PPT study reader across Antigravity, Claude Desktop, and Codex.
+  interactive PPT study reader across Antigravity, Claude Desktop, Claude Code, and Codex.
 ---
 
 # 大学生 PPT 期末速通 / 预习伴读工作流
 
-当你帮一位学生用有限天数（例如 3 天考前冲刺、4 天新课预习、周末突击）吃透某门大学课程的一堆 PDF 课件时，按以下 5 步执行（支持 Antigravity、Claude Desktop、Codex）：
+当你帮一位学生用有限天数（例如 3 天考前冲刺、4 天新课预习、周末突击）吃透某门大学课程的一堆 PDF 课件时，按以下 5 步执行（支持 Antigravity、Claude Desktop、Claude Code、Codex）：
 
 ## Step 1: 盘点课程文件夹（只读扫描，绝不改动原件）
 
@@ -18,16 +18,22 @@ description: >-
 2. 运行提取脚本，把所有 PDF 的总页数、每页前几行标题和正文摘要导出来：
 
 ```bash
-python3 scripts/extract_index.py \
+python3 "<REPO>/scripts/extract_index.py" \
   --course-dir "<COURSE_DIR>" \
-  --out "/tmp/slides_dump.json"
+  --out "<TMP>/slides_dump.json"
 ```
 
-（请按实际安装目录定位 `scripts/extract_index.py`，例如 `~/.gemini/config/plugins/ppt-study-reader/scripts/extract_index.py` 或 `~/.codex/skills/ppt-exam-prep/../../scripts/extract_index.py`；若无法运行 shell，也可以直接调用 `open_ppt_reader({ courseDir })` + `get_slide_image` 浏览。）
+- `<TMP>`：系统临时目录，或当前会话的 scratchpad 目录（Windows 没有 `/tmp`）。Windows 上没有 `python3` 时用 `python`。
+- `<REPO>`：本工具的安装目录，按客户端定位：
+  - Claude Code 插件：本 Skill 所在目录往上两级（`skills/ppt-exam-prep/../..`）；
+  - 本地克隆（如 `~/ppt-study-reader`）：Claude Code 的 setup 安装、Claude Desktop、Codex 都用它；
+  - Antigravity：`~/.gemini/config/plugins/ppt-study-reader`。
+- 脚本会自动寻找支持中文路径的 poppler（Windows 上优先用 scoop 安装的版本，也可以用 `PPT_POPPLER_BIN` 环境变量指定）。
+- 若无法运行 shell，也可以直接调用 `open_ppt_reader({ courseDir })` + `get_slide_image` 浏览。
 
 ## Step 2: 通览目录、划分每天任务与重点标准
 
-1. 读取 `/tmp/slides_dump.json` 中各 PDF 的页数与每页标题，把整门课合理切分到 `Day 1` ~ `Day N`。
+1. 读取 `<TMP>/slides_dump.json` 中各 PDF 的页数与每页标题，把整门课合理切分到 `Day 1` ~ `Day N`。
 2. 结合学生的学习目标制定分级标准：
    - **期末冲刺模式**：
      - `high`（🟢 重点精读）：高频考点、计算公式、例题与课堂小练习、核心原理机制图、必背对比表
@@ -79,7 +85,7 @@ python3 scripts/extract_index.py \
 运行一键叠印脚本，在 `<COURSE_DIR>/标注版PPT/` 下生成保留原矢量清晰度、自动避让正文文字的标注版 PDF：
 
 ```bash
-node scripts/annotate_all.mjs \
+node "<REPO>/scripts/annotate_all.mjs" \
   --course-dir "<COURSE_DIR>" \
   --annotations "<COURSE_DIR>/标注版PPT/study_annotations.json" \
   --out-dir "<COURSE_DIR>/标注版PPT"
@@ -99,8 +105,13 @@ node scripts/annotate_all.mjs \
     "filter": "all"
   }
   ```
+- **Claude Code**：
+  调用 `start_web_reader`（传入相同的 `courseDir` 与 `annotationsPath`），把返回的 `http://127.0.0.1:<port>` 链接发给学生。
+  然后立刻用 Bash 的 `run_in_background` 在后台运行返回的 `listenCommand`（提问监听器）：
+  - 学生在浏览器点「提问」后它会退出，你会被自动唤醒：调用 `get_pending_ppt_question` 取回问题与选区截图后作答；
+  - 每答完一题，用同一条命令重新在后台挂起；输出 `PPT_WAIT_TIMEOUT` 时静默重新挂起。
 - **Codex CLI 等终端环境**：
-  调用 `start_web_reader`（传入相同的 `courseDir` 与 `annotationsPath`）启动本地浏览器伴读视图并输出 `http://127.0.0.1:<port>` 链接；用户在浏览器提问后，可粘贴文本或直接调用 `get_pending_ppt_question` 读取问题与选区截图。
+  调用 `start_web_reader` 启动本地浏览器伴读视图并输出链接；用户在浏览器提问后，可粘贴文本或直接调用 `get_pending_ppt_question` 读取问题与选区截图。
 
 向学生输出：
 1. 按天划分的极简学习路线图 + 各讲 🟢/🟡/🔴 页数统计；

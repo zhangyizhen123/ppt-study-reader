@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { pythonCommand } from "./tools_env.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -412,7 +413,9 @@ export function createPptCore({
     const cropId = `crop_${Date.now()}_${crypto.randomBytes(2).toString("hex")}.png`;
     const cropPath = path.join(CROPS_DIR, cropId);
 
-    const { stdout } = await execFileAsync("python3", [
+    const [pyCmd, ...pyPre] = pythonCommand();
+    const { stdout } = await execFileAsync(pyCmd, [
+      ...pyPre,
       CROP_HELPER_PATH,
       "--src",
       pngPath,

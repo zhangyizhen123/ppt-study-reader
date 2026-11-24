@@ -6,6 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { applyToolEnv, pythonCommand } from "../server/tools_env.mjs";
+import { CLAUDE_MD_START } from "./setup_claude_code.mjs";
+
+applyToolEnv();
+const [PY_CMD, ...PY_PRE] = pythonCommand();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -31,11 +36,12 @@ async function createDummyPdf(outPath, pagesText) {
   fs.writeFileSync(outPath, await doc.save());
 }
 
-function startRpcClient(dataDir) {
+function startRpcClient(dataDir, { entry = path.join(ROOT_DIR, "server/index.mjs"), cwd = os.tmpdir() } = {}) {
   const proc = spawn(
-    "node",
-    [path.join(ROOT_DIR, "server/index.mjs"), `--data-dir=${dataDir}`],
+    process.execPath,
+    [entry, `--data-dir=${dataDir}`],
     {
+      cwd,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, PPT_COURSE_DIR: "", PPT_ANNOTATIONS_PATH: "" },
     },
@@ -110,7 +116,47 @@ async function main() {
     );
     assert.match(setupOut, /claude_desktop_config\.json/);
     assert.match(setupOut, /codex mcp add ppt_study_reader/);
+    assert.match(setupOut, /=== Claude Code ===/);
     console.log("setup_clients.mjs dry-run OK");
+
+    // 2b. Claude Code setup --apply（写入课程目录，重复执行应幂等且保留用户内容）
+    const ccCourse = path.join(tmpRoot, "ccCourse");
+    const ccSkills = path.join(tmpRoot, "ccSkills");
+    fs.mkdirSync(ccCourse, { recursive: true });
+    fs.writeFileSync(path.join(ccCourse, "CLAUDE.md"), "# 我自己的笔记\n\n保留这一段。\n", "utf8");
+    fs.writeFileSync(
+      path.join(ccCourse, ".mcp.json"),
+      JSON.stringify({ mcpServers: { other: { command: "x" } } }),
+      "utf8",
+    );
+    for (let i = 0; i < 2; i++) {
+      execFileSync(
+        process.execPath,
+        [
+          path.join(ROOT_DIR, "scripts/setup_clients.mjs"),
+          "--client",
+          "claude-code",
+          "--course-dir",
+          ccCourse,
+          `--skills-dir=${ccSkills}`,
+          "--apply",
+        ],
+        { encoding: "utf8" },
+      );
+    }
+    const ccMcp = JSON.parse(fs.readFileSync(path.join(ccCourse, ".mcp.json"), "utf8"));
+    assert.ok(ccMcp.mcpServers.other, "existing .mcp.json servers must be kept");
+    assert.equal(ccMcp.mcpServers.ppt_study_reader.env.PPT_COURSE_DIR, ccCourse);
+    const ccSettings = JSON.parse(
+      fs.readFileSync(path.join(ccCourse, ".claude", "settings.local.json"), "utf8"),
+    );
+    assert.deepEqual(ccSettings.enabledMcpjsonServers, ["ppt_study_reader"]);
+    const ccMd = fs.readFileSync(path.join(ccCourse, "CLAUDE.md"), "utf8");
+    assert.match(ccMd, /保留这一段/);
+    assert.equal(ccMd.split(CLAUDE_MD_START).length - 1, 1, "CLAUDE.md block must not duplicate");
+    assert.match(ccMd, /listenCommand/);
+    assert.ok(fs.existsSync(path.join(ccSkills, "ppt-exam-prep", "SKILL.md")));
+    console.log("setup --client claude-code --apply OK (idempotent)");
 
     // 3. Create synthetic PDFs
     await createDummyPdf(path.join(courseA, "01-Intro.pdf"), [
@@ -124,8 +170,8 @@ async function main() {
     // 4. Test extract_index.py + annotate_all.mjs
     const dumpPath = path.join(tmpRoot, "dump.json");
     execFileSync(
-      "python3",
-      [path.join(ROOT_DIR, "scripts/extract_index.py"), "--course-dir", courseA, "--out", dumpPath],
+      PY_CMD,
+      [...PY_PRE, path.join(ROOT_DIR, "scripts/extract_index.py"), "--course-dir", courseA, "--out", dumpPath],
       { stdio: "inherit" },
     );
     const dump = JSON.parse(fs.readFileSync(dumpPath, "utf8"));
@@ -274,6 +320,7 @@ async function main() {
       });
       const baseUrl = webRes.structuredContent.url;
       assert.match(baseUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+      assert.match(webRes.structuredContent.listenCommand, /wait_question\.mjs" --url http:\/\/127\.0\.0\.1:\d+$/);
 
       const pageHtml = await (await fetch(baseUrl + "/")).text();
       assert.match(pageHtml, /__PPT_READER_WEB_MODE__/);
@@ -293,6 +340,70 @@ async function main() {
         body: JSON.stringify({ name: "open_ppt_reader", arguments: {} }),
       });
       assert.equal(disallowedResp.status, 403);
+
+      const postAsk = (question) =>
+        fetch(baseUrl + "/api/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: `【PPT伴读提问】\n- 我的问题：${question}`, deck: "01-Intro.pdf", page: 1, question }),
+        }).then((r) => r.json());
+      const waitListeners = async (n) => {
+        for (let i = 0; i < 200; i++) {
+          const j = await (await fetch(baseUrl + "/api/listeners")).json();
+          if (j.listeners >= n) return;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        throw new Error("listener never registered");
+      };
+      const runWaiter = (url, extraArgs, env = process.env) =>
+        new Promise((resolve) => {
+          const child = spawn(
+            process.execPath,
+            [path.join(ROOT_DIR, "scripts/wait_question.mjs"), "--url", url, ...extraArgs],
+            { stdio: ["ignore", "pipe", "pipe"], env },
+          );
+          let out = "";
+          child.stdout.on("data", (c) => (out += c.toString("utf8")));
+          child.on("exit", (code) => resolve({ code, out }));
+        });
+
+      // 没有监听器时 listeners=0；since 之前的旧提问不会被返回
+      const noListener = await postAsk("无人监听的提问");
+      assert.equal(noListener.listeners, 0);
+      const stale = await (
+        await fetch(`${baseUrl}/api/wait?since=${encodeURIComponent(new Date().toISOString())}&hold=0`)
+      ).json();
+      assert.equal(stale.found, false);
+
+      // 长轮询挂起后收到新提问
+      const waitPromise = fetch(
+        `${baseUrl}/api/wait?since=${encodeURIComponent(new Date().toISOString())}&hold=10`,
+      ).then((r) => r.json());
+      await waitListeners(1);
+      const withListener = await postAsk("长轮询提问");
+      assert.equal(withListener.listeners, 1);
+      const waited = await waitPromise;
+      assert.equal(waited.found, true);
+      assert.match(waited.text, /长轮询提问/);
+
+      // wait_question.mjs：收到提问打印并 exit 0；超时打印 PPT_WAIT_TIMEOUT；连不上打印 PPT_BRIDGE_DOWN
+      const waiterDone = runWaiter(baseUrl, ["--timeout", "30"]);
+      await waitListeners(1);
+      await postAsk("监听器提问");
+      const waiterRes = await waiterDone;
+      assert.equal(waiterRes.code, 0);
+      assert.match(waiterRes.out, /PPT_QUESTION_RECEIVED/);
+      assert.match(waiterRes.out, /监听器提问/);
+      const timeoutRes = await runWaiter(baseUrl, ["--timeout", "2"]);
+      assert.equal(timeoutRes.code, 0);
+      assert.match(timeoutRes.out, /PPT_WAIT_TIMEOUT/);
+      const downRes = await runWaiter("http://127.0.0.1:9", ["--timeout", "60"], {
+        ...process.env,
+        PPT_WAIT_FAIL_GRACE_MS: "500",
+      });
+      assert.equal(downRes.code, 2);
+      assert.match(downRes.out, /PPT_BRIDGE_DOWN/);
+      console.log("Long-poll /api/wait + wait_question.mjs listener OK");
 
       const askResp = await fetch(baseUrl + "/api/ask", {
         method: "POST",
@@ -326,6 +437,36 @@ async function main() {
       console.log("All MCP + Claude Desktop + Codex Web Bridge tests PASSED");
     } finally {
       await client.close();
+    }
+
+    // 6. dist/server.mjs 不依赖 node_modules 也能运行（Claude Code 插件安装场景）
+    const pluginRoot = path.join(tmpRoot, "plugin");
+    for (const dir of ["dist", "scripts", path.join("ui", "dist"), "skills"]) {
+      fs.cpSync(path.join(ROOT_DIR, dir), path.join(pluginRoot, dir), { recursive: true });
+    }
+    const bundled = startRpcClient(path.join(tmpRoot, "data-bundled"), {
+      entry: path.join(pluginRoot, "dist", "server.mjs"),
+      cwd: courseA, // 插件零配置：启动目录里有 PDF 时自动作为课程目录
+    });
+    try {
+      await bundled.rpc("initialize", {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "smoke-test-bundled", version: "1.0.0" },
+      });
+      bundled.notify("notifications/initialized");
+      const bTools = await bundled.rpc("tools/list");
+      assert.ok(bTools.tools.some((t) => t.name === "start_web_reader"));
+      const bList = await bundled.rpc("tools/call", { name: "app_list_decks", arguments: {} });
+      assert.equal(bList.structuredContent.configured, true, "cwd with PDFs should become the course dir");
+      const bSlide = await bundled.rpc("tools/call", {
+        name: "get_slide_image",
+        arguments: { deck: "01-Intro.pdf", page: 1 },
+      });
+      assert.equal(bSlide.content[1].type, "image");
+      console.log("Bundled dist/server.mjs (no node_modules, cwd course dir) OK");
+    } finally {
+      await bundled.close();
     }
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });

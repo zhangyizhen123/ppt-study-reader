@@ -1,0 +1,10 @@
+{
+  "name": "ppt-study-reader",
+  "version": "1.1.0",
+  "description": "大学期末速通与预习 PPT 伴读：逐页红黄绿重点标注、离线《标注版 PPT》、浏览器框选/长按/划词提问并自动送达 Claude Code。",
+  "author": { "name": "zhangyizhen123" },
+  "homepage": "https://github.com/zhangyizhen123/ppt-study-reader",
+  "repository": "https://github.com/zhangyizhen123/ppt-study-reader",
+  "license": "MIT",
+  "keywords": ["exam-prep", "pdf", "slides", "study", "mcp"]
+}

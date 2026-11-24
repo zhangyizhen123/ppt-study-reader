@@ -1,8 +1,12 @@
 #!/usr/bin/env node
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPptCore } from "./core.mjs";
 import { startWebBridge } from "./web_bridge.mjs";
+import { applyToolEnv } from "./tools_env.mjs";
+
+applyToolEnv();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
@@ -11,7 +15,7 @@ function parseArgs() {
   const opts = {
     courseDir: process.env.PPT_COURSE_DIR || "",
     annotations: process.env.PPT_ANNOTATIONS_PATH || "",
-    dataDir: process.env.PPT_DATA_DIR || "/tmp/ppt-study-reader-web-data",
+    dataDir: process.env.PPT_DATA_DIR || path.join(os.tmpdir(), "ppt-study-reader-web-data"),
     port: Number(process.env.PPT_WEB_PORT || 4173),
   };
   const argv = process.argv.slice(2);
@@ -47,7 +51,11 @@ if (opts.courseDir) {
 const uiHtmlPath = path.join(PLUGIN_ROOT, "ui", "dist", "app.html");
 const bridge = await startWebBridge(core, { port: opts.port, uiHtmlPath });
 console.log(`PPT 伴读浏览器服务已启动：${bridge.url}`);
-console.log("在浏览器打开上方链接，框选/长按/划词后即可保存并复制到 Codex / Claude 提问。按 Ctrl+C 退出。");
+console.log("在浏览器打开上方链接，框选/长按/划词后点「提问」即可保存并复制，再到 Claude Code / Codex 里粘贴提问。");
+console.log(
+  `想让提问自动送达 Claude Code：让助手在后台运行 node "${path.join(PLUGIN_ROOT, "scripts", "wait_question.mjs").replace(/\\/g, "/")}" --url ${bridge.url}`,
+);
+console.log("按 Ctrl+C 退出。");
 
 const shutdown = async () => {
   await bridge.close();

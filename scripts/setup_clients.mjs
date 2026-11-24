@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { setupClaudeCode } from "./setup_claude_code.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -13,6 +14,7 @@ function parseArgs() {
     client: "all",
     courseDir: "",
     apply: false,
+    skillsDir: "",
   };
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
@@ -22,6 +24,7 @@ function parseArgs() {
     else if (a === "--course-dir" && argv[i + 1]) opts.courseDir = argv[++i];
     else if (a.startsWith("--course-dir=")) opts.courseDir = a.slice("--course-dir=".length);
     else if (a === "--apply") opts.apply = true;
+    else if (a.startsWith("--skills-dir=")) opts.skillsDir = a.slice("--skills-dir=".length);
   }
   return opts;
 }
@@ -38,9 +41,9 @@ function getClaudeConfigHintPath() {
 
 function main() {
   const opts = parseArgs();
-  const validClients = new Set(["all", "antigravity", "claude", "codex"]);
+  const validClients = new Set(["all", "antigravity", "claude", "claude-code", "codex"]);
   if (!validClients.has(opts.client)) {
-    console.error(`Invalid --client "${opts.client}". Expected: all|antigravity|claude|codex`);
+    console.error(`Invalid --client "${opts.client}". Expected: all|antigravity|claude|claude-code|codex`);
     process.exit(1);
   }
 
@@ -117,6 +120,16 @@ function main() {
         );
       }
     }
+  }
+
+  if (opts.client === "all" || opts.client === "claude-code") {
+    setupClaudeCode({
+      repoRoot: REPO_ROOT,
+      serverEntry,
+      courseDir,
+      apply: opts.apply,
+      skillsDir: opts.skillsDir,
+    });
   }
 
   if (opts.client === "all" || opts.client === "antigravity") {

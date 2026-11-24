@@ -4,6 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { applyToolEnv, pythonCommand } from "../server/tools_env.mjs";
+
+applyToolEnv();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -78,12 +81,12 @@ try {
   if (opts.fontRegular) pyArgs.push("--font-regular", opts.fontRegular);
   if (opts.fontBold) pyArgs.push("--font-bold", opts.fontBold);
 
-  execFileSync("python3", pyArgs, { stdio: "inherit" });
-  execFileSync(
-    "node",
-    [path.join(__dirname, "annotate_pdfs.mjs"), "--manifest", manifestPath],
-    { stdio: "inherit" },
-  );
+  const [pyCmd, ...pyPre] = pythonCommand();
+  execFileSync(pyCmd, [...pyPre, ...pyArgs], { stdio: "inherit" });
+  // 插件安装没有 node_modules 时优先使用打包好的 dist/annotate_pdfs.mjs
+  const bundled = path.join(__dirname, "..", "dist", "annotate_pdfs.mjs");
+  const stamper = fs.existsSync(bundled) ? bundled : path.join(__dirname, "annotate_pdfs.mjs");
+  execFileSync(process.execPath, [stamper, "--manifest", manifestPath], { stdio: "inherit" });
 } finally {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 }

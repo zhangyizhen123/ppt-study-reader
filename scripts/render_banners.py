@@ -7,7 +7,10 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from PIL import Image, ImageDraw, ImageFont
+
+from _tools import apply_tool_env
 
 SCALE = 3
 
@@ -20,6 +23,9 @@ FONT_CANDIDATES = [
     # WSL -> Windows Fonts
     ("/mnt/c/Windows/Fonts/msyh.ttc", "/mnt/c/Windows/Fonts/msyhbd.ttc", 0),
     ("/mnt/c/Windows/Fonts/simhei.ttf", "/mnt/c/Windows/Fonts/simhei.ttf", 0),
+    # Native Windows
+    ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/msyhbd.ttc", 0),
+    ("C:/Windows/Fonts/simhei.ttf", "C:/Windows/Fonts/simhei.ttf", 0),
     # macOS PingFang / STHeiti
     ("/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/PingFang.ttc", 0),
     ("/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/STHeiti Medium.ttc", 0),
@@ -87,7 +93,7 @@ class FontSet:
 
 
 def extract_page_bboxes(pdf_path: str):
-    out = subprocess.check_output(["pdftotext", "-bbox", pdf_path, "-"], text=True, errors="ignore")
+    out = subprocess.check_output(["pdftotext", "-bbox", pdf_path, "-"], text=True, encoding="utf-8", errors="ignore")
     chunks = out.split("<page ")[1:]
     pages = []
     size_pat = re.compile(r'width="([\d.]+)"\s+height="([\d.]+)"')
@@ -207,8 +213,8 @@ def main():
     parser.add_argument("--course-dir", required=True)
     parser.add_argument("--annotations", required=True)
     parser.add_argument("--out-dir", default="")
-    parser.add_argument("--cache-dir", default="/tmp/ppt_annot_banners")
-    parser.add_argument("--manifest", default="/tmp/ppt_annot_manifest.json")
+    parser.add_argument("--cache-dir", default=os.path.join(tempfile.gettempdir(), "ppt_annot_banners"))
+    parser.add_argument("--manifest", default=os.path.join(tempfile.gettempdir(), "ppt_annot_manifest.json"))
     parser.add_argument("--font-regular", default="")
     parser.add_argument("--font-bold", default="")
     args = parser.parse_args()
@@ -274,4 +280,5 @@ def main():
 
 
 if __name__ == "__main__":
+    apply_tool_env()
     main()

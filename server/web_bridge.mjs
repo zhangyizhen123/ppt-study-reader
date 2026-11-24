@@ -42,7 +42,36 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 
+const MAX_HOLD_SECONDS = 55;
+
 export async function startWebBridge(core, { port = 4173, uiHtmlPath }) {
+  // Long-poll waiters (e.g. scripts/wait_question.mjs run in the background by Claude Code).
+  const waiters = new Set();
+
+  function pendingSince(sinceMs) {
+    const p = core.getPendingQuestion({ markConsumed: false });
+    if (!p.found || p.consumed) return null;
+    const savedMs = Date.parse(p.savedAt);
+    if (Number.isFinite(sinceMs) && !(savedMs > sinceMs)) return null;
+    return publicQuestion(p);
+  }
+
+  function publicQuestion(p) {
+    return {
+      found: true,
+      text: p.text,
+      question: p.question,
+      deck: p.deck,
+      page: p.page,
+      cropId: p.cropId || "",
+      savedAt: p.savedAt,
+    };
+  }
+
+  function notifyWaiters(entry) {
+    for (const w of [...waiters]) w.resolve(publicQuestion(entry));
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -93,8 +122,51 @@ export async function startWebBridge(core, { port = 4173, uiHtmlPath }) {
 
       if (req.method === "POST" && url.pathname === "/api/ask") {
         const body = await readJsonBody(req);
+        const listeners = waiters.size;
         const saved = core.savePendingQuestion(body);
-        sendJson(res, 200, { ok: true, savedAt: saved.savedAt });
+        notifyWaiters(saved);
+        sendJson(res, 200, { ok: true, savedAt: saved.savedAt, listeners });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/wait") {
+        const sinceRaw = url.searchParams.get("since");
+        const sinceMs = sinceRaw ? Date.parse(sinceRaw) : NaN;
+        const holdSec = Math.min(
+          MAX_HOLD_SECONDS,
+          Math.max(0, Number(url.searchParams.get("hold") ?? 25) || 0),
+        );
+        const ready = pendingSince(sinceMs);
+        if (ready || holdSec === 0) {
+          sendJson(res, 200, ready || { found: false });
+          return;
+        }
+        await new Promise((resolve) => {
+          const waiter = {
+            resolve: (payload) => {
+              if (!waiters.has(waiter)) return;
+              waiters.delete(waiter);
+              clearTimeout(timer);
+              if (!res.writableEnded) sendJson(res, 200, payload);
+              resolve();
+            },
+          };
+          const timer = setTimeout(() => waiter.resolve({ found: false }), holdSec * 1000);
+          waiters.add(waiter);
+          // res "close" fires when the client disconnects (req "close" fires as soon as a GET body is read).
+          res.on("close", () => {
+            if (waiters.has(waiter)) {
+              waiters.delete(waiter);
+              clearTimeout(timer);
+              resolve();
+            }
+          });
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/listeners") {
+        sendJson(res, 200, { listeners: waiters.size });
         return;
       }
 
@@ -134,6 +206,7 @@ export async function startWebBridge(core, { port = 4173, uiHtmlPath }) {
   }
 
   const close = async () => {
+    for (const w of [...waiters]) w.resolve({ found: false, closing: true });
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(() => resolve()));
   };

@@ -7,9 +7,11 @@ import os
 import re
 import subprocess
 
+from _tools import apply_tool_env
+
 
 def get_page_count(pdf_path: str) -> int:
-    info = subprocess.check_output(["pdfinfo", pdf_path], text=True, errors="ignore")
+    info = subprocess.check_output(["pdfinfo", pdf_path], text=True, encoding="utf-8", errors="ignore")
     for line in info.splitlines():
         if line.startswith("Pages:"):
             return int(line.split(":", 1)[1].strip())
@@ -47,7 +49,7 @@ def main():
         n_pages = get_page_count(pdf_path)
         total_pages += n_pages
 
-        txt = subprocess.check_output(["pdftotext", pdf_path, "-"], text=True, errors="ignore")
+        txt = subprocess.check_output(["pdftotext", pdf_path, "-"], text=True, encoding="utf-8", errors="ignore")
         raw_pages = txt.split("\f")
         if len(raw_pages) > n_pages and not raw_pages[-1].strip():
             raw_pages = raw_pages[:n_pages]
@@ -91,4 +93,5 @@ def main():
 
 
 if __name__ == "__main__":
+    apply_tool_env()
     main()

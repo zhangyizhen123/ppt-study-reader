@@ -1,0 +1,11 @@
+{
+  "name": "ppt-study-reader",
+  "owner": { "name": "zhangyizhen123" },
+  "plugins": [
+    {
+      "name": "ppt-study-reader",
+      "source": "./",
+      "description": "大学期末速通与预习 PPT 伴读：逐页重点标注、离线标注版 PPT、浏览器框选提问自动送达。"
+    }
+  ]
+}

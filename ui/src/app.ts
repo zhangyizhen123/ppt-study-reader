@@ -812,7 +812,7 @@ async function submitQuestion(questionText: string) {
     const { fullText, cropId, cropPath } = await buildFormattedPrompt(q);
 
     if (isWebBridge) {
-      await fetch("/api/ask", {
+      const askResp = await fetch("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -824,9 +824,15 @@ async function submitQuestion(questionText: string) {
           question: q,
         }),
       });
-      await copyTextSafe(fullText);
+      const askJson = (await askResp.json().catch(() => ({}))) as { listeners?: number };
       closeAskPopover();
-      showToast("已保存并复制！去 Codex 粘贴，或直接说「回答刚选的PPT」");
+      if ((askJson.listeners ?? 0) > 0) {
+        // 有助手在后台监听（如 Claude Code 挂起的 wait_question.mjs）：问题已自动送达
+        showToast("已送达 AI，回答会出现在对话里");
+      } else {
+        await copyTextSafe(fullText);
+        showToast("已保存并复制！到对话里粘贴，或直接说「讲一下我刚框选的PPT」");
+      }
       return;
     }
 
@@ -867,7 +873,7 @@ async function attachToContext() {
     if (isWebBridge) {
       await copyTextSafe(fullText);
       closeAskPopover();
-      showToast("已复制提问文本到剪贴板，去 Codex/Claude 粘贴即可");
+      showToast("已复制提问文本到剪贴板，到对话里粘贴即可");
       return;
     }
     const caps = app!.getHostCapabilities();

@@ -1,16 +1,17 @@
 {
   "name": "ppt-study-reader",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "AI-powered college exam-prep & preview PPT study toolkit: per-slide priority tagging, non-destructive annotated PDF generator, and Antigravity side-pane interactive reader.",
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "build": "node scripts/build_ui.mjs",
+    "build": "node scripts/build_ui.mjs && node scripts/build_bundles.mjs",
     "build:ui": "node scripts/build_ui.mjs",
     "annotate": "node scripts/annotate_all.mjs",
     "web": "node server/web.mjs",
     "setup": "node scripts/setup_clients.mjs",
-    "test": "node scripts/smoke_test.mjs"
+    "test": "node scripts/smoke_test.mjs",
+    "build:bundles": "node scripts/build_bundles.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.1.2",
@@ -27,6 +28,7 @@
     "exam-prep",
     "study-tools",
     "pdf-annotation",
-    "university"
+    "university",
+    "claude-code"
   ]
 }

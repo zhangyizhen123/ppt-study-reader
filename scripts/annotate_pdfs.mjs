@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { PDFDocument, rgb } from "pdf-lib";
 
 function parseArgs() {
-  let manifestPath = "/tmp/ppt_annot_manifest.json";
+  let manifestPath = path.join(os.tmpdir(), "ppt_annot_manifest.json");
   for (let i = 2; i < process.argv.length; i++) {
     const a = process.argv[i];
     if (a === "--manifest" && process.argv[i + 1]) {

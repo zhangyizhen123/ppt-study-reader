@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -14,16 +16,45 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { createPptCore } from "./core.mjs";
 import { startWebBridge } from "./web_bridge.mjs";
+import { applyToolEnv } from "./tools_env.mjs";
+
+applyToolEnv();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
+const WAIT_SCRIPT_PATH = path.join(PLUGIN_ROOT, "scripts", "wait_question.mjs");
+
+function dirHasPdf(dir) {
+  try {
+    return fs.readdirSync(dir).some((f) => f.toLowerCase().endsWith(".pdf") && !f.startsWith("."));
+  } catch {
+    return false;
+  }
+}
+
+// 课程目录：优先 PPT_COURSE_DIR；否则若启动目录（Claude Code 的项目目录）里有 PDF，就用它（插件零配置）。
+const ENV_COURSE_DIR =
+  (process.env.PPT_COURSE_DIR || "").trim() || (dirHasPdf(process.cwd()) ? process.cwd() : "");
+
+function courseDataKey(dir) {
+  const resolved = path.resolve(dir);
+  const norm = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const hash = crypto.createHash("sha1").update(norm).digest("hex").slice(0, 8);
+  const base = path.basename(resolved).replace(/[^\p{L}\p{N}_.-]+/gu, "_").slice(0, 40) || "course";
+  return `${base}-${hash}`;
+}
 
 function parseArgs() {
-  let dataDir = "/tmp/ppt-study-reader-data";
+  let dataDir = "";
   for (const arg of process.argv.slice(2)) {
     if (arg.startsWith("--data-dir=")) {
       dataDir = arg.slice("--data-dir=".length);
     }
+  }
+  if (!dataDir) {
+    // 未显式指定时按课程分目录，避免多门课共用一份 state.json 互相覆盖
+    const base = path.join(os.homedir(), ".ppt-study-reader-data");
+    dataDir = ENV_COURSE_DIR ? path.join(base, courseDataKey(ENV_COURSE_DIR)) : path.join(base, "default");
   }
   return { dataDir };
 }
@@ -36,7 +67,7 @@ const MIME_TYPE = "text/html;profile=mcp-app";
 const core = createPptCore({
   pluginRoot: PLUGIN_ROOT,
   dataDir: DATA_DIR,
-  envCourseDir: process.env.PPT_COURSE_DIR || "",
+  envCourseDir: ENV_COURSE_DIR,
   envAnnotationsPath: process.env.PPT_ANNOTATIONS_PATH || "",
 });
 
@@ -52,7 +83,7 @@ const TOOLS = [
     name: "open_ppt_reader",
     title: "打开 PPT 伴读",
     description:
-      "在支持 MCP Apps 的客户端（Antigravity 侧边栏 / Claude Desktop 内嵌视图）打开带重点分级标注的 PPT 交互伴读器，支持左键框选（文字与图表通吃）、长按选整行和划词向 AI 提问。",
+      "在支持 MCP Apps 的客户端（Antigravity 侧边栏 / Claude Desktop 内嵌视图）打开带重点分级标注的 PPT 交互伴读器，支持左键框选（文字与图表通吃）、长按选整行和划词向 AI 提问。Claude Code、Codex CLI 等不能渲染内嵌界面的客户端请改用 start_web_reader。",
     inputSchema: {
       type: "object",
       properties: {
@@ -93,7 +124,7 @@ const TOOLS = [
     name: "start_web_reader",
     title: "启动浏览器伴读视图",
     description:
-      "为 Codex CLI 等终端客户端启动本地环回 Web 伴读界面（127.0.0.1），在浏览器中支持同样的鼠标左键框选/长按/划词，并可将选区与截图传回对话。",
+      "为 Claude Code、Codex CLI 等不能渲染内嵌界面的客户端启动本地环回 Web 伴读界面（127.0.0.1），在浏览器中支持同样的鼠标左键框选/长按/划词提问。返回的 listenCommand 是提问监听器：在后台运行它，用户点「提问」时它会退出并带出问题，实现提问自动送达。",
     inputSchema: {
       type: "object",
       properties: {
@@ -128,7 +159,7 @@ const TOOLS = [
     name: "read_ppt_crop",
     title: "查看 PPT 选区截图",
     description:
-      "根据【PPT伴读提问】里的选区截图ID（cropId），以标准 MCP 图像格式返回局部高清截图，便于 Claude Desktop、Codex 等跨平台客户端看懂架构图、公式和代码截图。",
+      "根据【PPT伴读提问】里的选区截图ID（cropId），以标准 MCP 图像格式返回局部高清截图，便于各客户端看懂架构图、公式和代码截图。",
     inputSchema: {
       type: "object",
       properties: {
@@ -145,7 +176,7 @@ const TOOLS = [
     name: "get_slide_image",
     title: "获取指定 PPT 页面图像",
     description:
-      "在任意 MCP 客户端（包括 Claude Desktop 与 Codex）中直接渲染指定课件页，返回重点标注信息、页面文本摘要与整页高清 PNG 图像。",
+      "在任意 MCP 客户端中直接渲染指定课件页，返回重点标注信息、页面文本摘要与整页高清 PNG 图像。",
     inputSchema: {
       type: "object",
       properties: {
@@ -167,7 +198,7 @@ const TOOLS = [
     name: "get_pending_ppt_question",
     title: "读取浏览器伴读刚提交的提问",
     description:
-      "用于 Codex CLI 等终端客户端：读取用户在浏览器伴读视图中最近一次鼠标框选/长按/划词提交的提问与选区截图。",
+      "读取用户在浏览器伴读视图（start_web_reader）中最近一次框选/长按/划词提交的提问与选区截图。提问监听器（listenCommand）退出并带出问题后，调用它取回图文再作答。",
     inputSchema: {
       type: "object",
       properties: {
@@ -360,7 +391,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         content: [
           {
             type: "text",
-            text: `已打开 PPT 伴读：${res.initialDeckTitle} 第 ${res.initialPage}/${res.initialDeckPageCount} 页（筛选：${res.initialFilter}）。若在支持 MCP Apps UI 的客户端（Antigravity / Claude Desktop）中，可直接在可视化窗口左键框选或长按整行向我提问；若在纯终端客户端（如 Codex CLI），可调用 start_web_reader 在浏览器中打开交互视图。`,
+            text: `已打开 PPT 伴读：${res.initialDeckTitle} 第 ${res.initialPage}/${res.initialDeckPageCount} 页（筛选：${res.initialFilter}）。若在支持 MCP Apps UI 的客户端（Antigravity / Claude Desktop 的 Chat）中，可直接在可视化窗口左键框选或长按整行向我提问；若当前客户端显示不了内嵌界面（如 Claude Code、Codex CLI），请改用 start_web_reader 在浏览器中打开交互视图。`,
           },
         ],
         structuredContent: res,
@@ -379,16 +410,31 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const statusHint = list.configured
         ? `当前已加载课程目录：${list.courseDir}（共 ${list.decks.length} 份 PDF，${list.totalPages} 页）。`
         : "提示：当前尚未配置课程目录，请先传 courseDir 参数或告知我你的 PDF 文件夹路径。";
+      const listenCommand = `node "${WAIT_SCRIPT_PATH.replace(/\\/g, "/")}" --url ${webBridge.url}`;
       return {
         content: [
           {
             type: "text",
-            text: `PPT 伴读浏览器交互视图已启动：${webBridge.url}\n${statusHint}\n\n在浏览器打开上方链接即可左键拖拽框选（文字/图表通吃）、原地长按整行或纯划词；点击“提问”后，问题与局部高清截图会自动保存并复制到剪贴板，切回 Codex 粘贴或直接说“讲一下我刚在浏览器里选的内容”（我会调用 get_pending_ppt_question 读取图文）即可！`,
+            text: [
+              `PPT 伴读浏览器交互视图已启动：${webBridge.url}`,
+              statusHint,
+              "",
+              "用户在浏览器里左键拖拽框选（文字/图表通吃）、原地长按整行或纯划词，点「提问」即可。",
+              "",
+              "【提问自动送达（Claude Code 等能在后台运行命令的客户端）】",
+              `请立刻用后台方式（如 Bash 的 run_in_background）运行提问监听器：${listenCommand}`,
+              "- 用户点「提问」后监听器会打印问题并退出，你会被自动唤醒：调用 get_pending_ppt_question 取回问题与选区截图后作答；",
+              "- 每答完一题，都用同一条命令重新在后台挂起监听；",
+              "- 输出 PPT_WAIT_TIMEOUT 时静默重新挂起，不必告诉用户；输出 PPT_BRIDGE_DOWN 时重新调用 start_web_reader。",
+              "",
+              "不能后台运行命令的客户端：提问会保存并复制到剪贴板，用户粘贴到对话，或说「讲一下我刚框选的 PPT」（调用 get_pending_ppt_question）。",
+            ].join("\n"),
           },
         ],
         structuredContent: {
           url: webBridge.url,
           port: webBridge.port,
+          listenCommand,
           configured: list.configured,
           courseDir: list.courseDir,
           deckCount: list.decks.length,
