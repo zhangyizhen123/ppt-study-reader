@@ -72,7 +72,10 @@ const QUICK_PROMPTS = [
   { label: "出题自测", prompt: "请针对我选中的这部分内容，出 2 道小自测题（附带解析）帮我检验是否真的理解了。" },
 ];
 
-const app = new App({ name: "PPT 伴读", version: "1.0.0" }, {});
+const isWebBridge = Boolean(
+  (window as unknown as { __PPT_READER_WEB_MODE__?: boolean }).__PPT_READER_WEB_MODE__,
+);
+const app = isWebBridge ? null : new App({ name: "PPT 伴读", version: "1.0.0" }, {});
 
 let decks: DeckInfo[] = [];
 let currentDeckFile = "";
@@ -81,6 +84,8 @@ let filterMode: FilterMode = "all";
 let selectMode: SelectMode = "box";
 let zoomed = false;
 let outlineOpen = false;
+let currentDisplayMode: "inline" | "fullscreen" | "pip" = "inline";
+let webTheme: "light" | "dark" = "light";
 let currentSlide: SlideData | null = null;
 const slideCache = new Map<string, SlideData>();
 
@@ -110,6 +115,8 @@ let filterGroupEl!: HTMLElement;
 let modeGroupEl!: HTMLElement;
 let zoomBtnEl!: HTMLButtonElement;
 let outlineBtnEl!: HTMLButtonElement;
+let fullscreenBtnEl!: HTMLButtonElement;
+let themeToggleBtnEl!: HTMLButtonElement;
 let ribbonEl!: HTMLElement;
 let prioBtnEl!: HTMLButtonElement;
 let tagBadgeEl!: HTMLElement;
@@ -133,6 +140,7 @@ let askCropCheckEl!: HTMLInputElement;
 let askInputEl!: HTMLInputElement;
 let askSendBtnEl!: HTMLButtonElement;
 let askAttachBtnEl!: HTMLButtonElement;
+let askFooterNoteEl!: HTMLElement;
 let toastEl!: HTMLElement;
 let toastTimer: number | null = null;
 
@@ -142,7 +150,47 @@ function showToast(msg: string) {
   if (toastTimer !== null) window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => {
     toastEl.classList.remove("show");
-  }, 2400);
+  }, 2800);
+}
+
+async function callServerTool(name: string, args: Record<string, unknown>) {
+  if (isWebBridge) {
+    const resp = await fetch("/api/tool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, arguments: args }),
+    });
+    const json = await resp.json();
+    if (!resp.ok) {
+      throw new Error(json.error || `HTTP ${resp.status}`);
+    }
+    return json as { structuredContent?: Record<string, unknown> };
+  }
+  return app!.callServerTool({ name, arguments: args });
+}
+
+async function copyTextSafe(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fallback below
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 function renderShell() {
@@ -152,6 +200,8 @@ function renderShell() {
         <select id="deckSelect" class="deck-select" title="选择课件"></select>
         <button id="zoomBtn" class="icon-btn" type="button">放大</button>
         <button id="outlineBtn" class="icon-btn" type="button">目录</button>
+        <button id="fullscreenBtn" class="icon-btn hidden" type="button">全屏</button>
+        <button id="themeToggleBtn" class="icon-btn hidden" type="button" title="切换深浅色主题">🌙</button>
       </div>
       <div class="toolbar-row">
         <div id="filterGroup" class="seg-group" title="按重点分级筛选翻页">
@@ -213,7 +263,7 @@ function renderShell() {
       </div>
       <div class="ask-actions-sub">
         <button id="askAttachBtn" class="btn-secondary" type="button">挂到聊天输入框</button>
-        <span style="font-size:10.5px;opacity:0.65;">直接发送到左侧对话</span>
+        <span id="askFooterNote" style="font-size:10.5px;opacity:0.65;">直接发送到对话</span>
       </div>
     </div>
 
@@ -225,6 +275,8 @@ function renderShell() {
   modeGroupEl = document.getElementById("modeGroup")!;
   zoomBtnEl = document.getElementById("zoomBtn") as HTMLButtonElement;
   outlineBtnEl = document.getElementById("outlineBtn") as HTMLButtonElement;
+  fullscreenBtnEl = document.getElementById("fullscreenBtn") as HTMLButtonElement;
+  themeToggleBtnEl = document.getElementById("themeToggleBtn") as HTMLButtonElement;
   ribbonEl = document.getElementById("ribbon")!;
   prioBtnEl = document.getElementById("prioBtn") as HTMLButtonElement;
   tagBadgeEl = document.getElementById("tagBadge")!;
@@ -248,7 +300,18 @@ function renderShell() {
   askInputEl = document.getElementById("askInput") as HTMLInputElement;
   askSendBtnEl = document.getElementById("askSendBtn") as HTMLButtonElement;
   askAttachBtnEl = document.getElementById("askAttachBtn") as HTMLButtonElement;
+  askFooterNoteEl = document.getElementById("askFooterNote")!;
   toastEl = document.getElementById("toast")!;
+
+  if (isWebBridge) {
+    themeToggleBtnEl.classList.remove("hidden");
+    askAttachBtnEl.textContent = "仅复制提问文本";
+    askFooterNoteEl.textContent = "保存待答队列并自动复制";
+    const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    webTheme = prefersDark ? "dark" : "light";
+    applyDocumentTheme(webTheme);
+    themeToggleBtnEl.textContent = webTheme === "dark" ? "☀️" : "🌙";
+  }
 
   const chipRow = document.getElementById("chipRow")!;
   for (const item of QUICK_PROMPTS) {
@@ -286,12 +349,12 @@ function showUnconfiguredGuide(courseDir: string) {
         : "尚未设置课程 PPT 文件夹。"
     }</p>
     <ol>
-      <li>直接在左侧聊天框发送：<br/><code>帮我制定 &lt;你的PPT文件夹路径&gt; 的复习计划，并打开 PPT 伴读</code></li>
-      <li>或在插件 <code>mcp_config.json</code> 中填入 <code>PPT_COURSE_DIR</code>（不需要预先标注也能直接看任意 PDF）。</li>
+      <li>在对话中发送：<br/><code>帮我制定 &lt;你的PPT文件夹路径&gt; 的复习计划，并打开 PPT 伴读</code></li>
+      <li>或在启动配置中填入 <code>PPT_COURSE_DIR</code>（无需预先标注也能直接看任意 PDF）。</li>
     </ol>
   `;
 
-  if (app.getHostCapabilities()?.message) {
+  if (!isWebBridge && app?.getHostCapabilities()?.message) {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "btn-primary";
@@ -302,7 +365,7 @@ function showUnconfiguredGuide(courseDir: string) {
         content: [
           {
             type: "text",
-            text: "我想开始用 PPT 伴读学习一门课程，请询问我的课件文件夹路径和复习天数，然后帮我生成重点标注并打开侧边栏。",
+            text: "我想开始用 PPT 伴读学习一门课程，请询问我的课件文件夹路径和复习天数，然后帮我生成重点标注并打开伴读界面。",
           },
         ],
       });
@@ -685,29 +748,29 @@ function openAskPopover(payload: SelectionPayload) {
 
 async function buildFormattedPrompt(questionText: string): Promise<{
   fullText: string;
+  cropId?: string;
   cropPath?: string;
 }> {
   if (!activeSelection || !currentSlide) {
     throw new Error("No active selection");
   }
+  let cropId: string | undefined;
   let cropPath: string | undefined;
   if (askCropCheckEl.checked) {
-    const cropRes = await app.callServerTool({
-      name: "app_crop_selection",
-      arguments: {
-        deck: currentSlide.deck,
-        page: currentSlide.page,
-        nx1: activeSelection.nx1,
-        ny1: activeSelection.ny1,
-        nx2: activeSelection.nx2,
-        ny2: activeSelection.ny2,
-        selectedText: activeSelection.text,
-      },
+    const cropRes = await callServerTool("app_crop_selection", {
+      deck: currentSlide.deck,
+      page: currentSlide.page,
+      nx1: activeSelection.nx1,
+      ny1: activeSelection.ny1,
+      nx2: activeSelection.nx2,
+      ny2: activeSelection.ny2,
+      selectedText: activeSelection.text,
     });
-    const sc = cropRes.structuredContent as { cropPath?: string } | undefined;
-    if (sc?.cropPath) {
-      cropPath = sc.cropPath;
-    }
+    const sc = cropRes.structuredContent as
+      | { cropId?: string; cropPath?: string }
+      | undefined;
+    if (sc?.cropId) cropId = sc.cropId;
+    if (sc?.cropPath) cropPath = sc.cropPath;
   }
 
   const dayStr = currentSlide.day > 0 ? ` — Day ${currentSlide.day}` : "";
@@ -726,27 +789,50 @@ async function buildFormattedPrompt(questionText: string): Promise<{
   } else {
     lines.push("- 选中内容：（纯图像/公式框选区域）");
   }
+  if (cropId) {
+    lines.push(`- 选区截图ID：${cropId}（可调用 read_ppt_crop 查看局部高清图）`);
+  }
   if (cropPath) {
     lines.push(`- 选区截图：${cropPath}`);
   }
   if (questionText.trim()) {
     lines.push(`- 我的问题：${questionText.trim()}`);
   }
-  return { fullText: lines.join("\n"), cropPath };
+  return { fullText: lines.join("\n"), cropId, cropPath };
 }
 
 async function submitQuestion(questionText: string) {
-  if (isSending || !activeSelection) return;
+  if (isSending || !activeSelection || !currentSlide) return;
   const q = questionText.trim() || "请帮我用大白话讲解一下我选中的这一块。";
   isSending = true;
   askSendBtnEl.disabled = true;
   askSendBtnEl.textContent = "发送中…";
 
   try {
-    const { fullText } = await buildFormattedPrompt(q);
-    const caps = app.getHostCapabilities();
+    const { fullText, cropId, cropPath } = await buildFormattedPrompt(q);
+
+    if (isWebBridge) {
+      await fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: fullText,
+          deck: currentSlide.deck,
+          page: currentSlide.page,
+          cropId: cropId || "",
+          cropPath: cropPath || "",
+          question: q,
+        }),
+      });
+      await copyTextSafe(fullText);
+      closeAskPopover();
+      showToast("已保存并复制！去 Codex 粘贴，或直接说「回答刚选的PPT」");
+      return;
+    }
+
+    const caps = app!.getHostCapabilities();
     if (caps?.message) {
-      const res = await app.sendMessage({
+      const res = await app!.sendMessage({
         role: "user",
         content: [{ type: "text", text: fullText }],
       });
@@ -755,15 +841,15 @@ async function submitQuestion(questionText: string) {
         return;
       }
       closeAskPopover();
-      showToast("已发送到左侧对话！");
+      showToast("已发送到对话！");
     } else {
-      await navigator.clipboard?.writeText(fullText);
+      await copyTextSafe(fullText);
       closeAskPopover();
       showToast("当前视图不支持直接发消息，内容已复制到剪贴板");
     }
   } catch (err) {
     console.error("Send error:", err);
-    showToast("发送失败，请重试或改用“挂到输入框”");
+    showToast("发送失败，请重试");
   } finally {
     isSending = false;
     askSendBtnEl.disabled = false;
@@ -778,21 +864,27 @@ async function attachToContext() {
 
   try {
     const { fullText } = await buildFormattedPrompt(askInputEl.value);
-    const caps = app.getHostCapabilities();
+    if (isWebBridge) {
+      await copyTextSafe(fullText);
+      closeAskPopover();
+      showToast("已复制提问文本到剪贴板，去 Codex/Claude 粘贴即可");
+      return;
+    }
+    const caps = app!.getHostCapabilities();
     if (caps?.updateModelContext) {
-      await app.updateModelContext({
+      await app!.updateModelContext({
         content: [{ type: "text", text: fullText }],
       });
       closeAskPopover();
       showToast("已挂到输入框上下文，直接输入问题回车即可！");
     } else {
-      await navigator.clipboard?.writeText(fullText);
+      await copyTextSafe(fullText);
       closeAskPopover();
       showToast("已复制到剪贴板");
     }
   } catch (err) {
     console.error("Attach error:", err);
-    showToast("挂载失败");
+    showToast("操作失败");
   } finally {
     isSending = false;
     askAttachBtnEl.disabled = false;
@@ -818,9 +910,9 @@ async function goToSlide(deckFile: string, pageNum: number) {
   let data = slideCache.get(cacheKey);
   if (!data) {
     slideImgEl.style.opacity = "0.55";
-    const res = await app.callServerTool({
-      name: "app_get_slide",
-      arguments: { deck: deck.file, page: clamped },
+    const res = await callServerTool("app_get_slide", {
+      deck: deck.file,
+      page: clamped,
     });
     const sc = res.structuredContent as SlideData | undefined;
     if (!sc || !sc.imageDataUrl) {
@@ -914,6 +1006,26 @@ function wireEvents() {
     if (outlineOpen) renderOutline();
   });
 
+  fullscreenBtnEl.addEventListener("click", async () => {
+    if (!app) return;
+    const targetMode = currentDisplayMode === "fullscreen" ? "inline" : "fullscreen";
+    try {
+      const res = await app.requestDisplayMode({ mode: targetMode });
+      currentDisplayMode = res.mode;
+      fullscreenBtnEl.textContent =
+        currentDisplayMode === "fullscreen" ? "退出全屏" : "全屏";
+      applyContext(app.getHostContext());
+    } catch {
+      showToast("当前宿主不支持切换显示模式");
+    }
+  });
+
+  themeToggleBtnEl.addEventListener("click", () => {
+    webTheme = webTheme === "dark" ? "light" : "dark";
+    applyDocumentTheme(webTheme);
+    themeToggleBtnEl.textContent = webTheme === "dark" ? "☀️" : "🌙";
+  });
+
   prioBtnEl.addEventListener("click", async () => {
     const deck = getDeck(currentDeckFile);
     if (!deck) return;
@@ -925,9 +1037,10 @@ function wireEvents() {
     };
     const nextPrio = nextOrder[cur.priority];
     try {
-      const res = await app.callServerTool({
-        name: "app_set_slide_priority",
-        arguments: { deck: deck.file, page: currentPage, priority: nextPrio },
+      const res = await callServerTool("app_set_slide_priority", {
+        deck: deck.file,
+        page: currentPage,
+        priority: nextPrio,
       });
       const sc = res.structuredContent as
         | { annotation: PageAnnotation; summary: Record<Priority, number> }
@@ -1196,6 +1309,26 @@ function applyContext(ctx: ReturnType<App["getHostContext"]>) {
   if (!ctx) return;
   if (ctx.theme) applyDocumentTheme(ctx.theme);
   if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
+
+  if (ctx.displayMode) {
+    currentDisplayMode = ctx.displayMode;
+  }
+
+  const supportsFullscreen = Boolean(
+    ctx.availableDisplayModes?.includes("fullscreen"),
+  );
+  fullscreenBtnEl.classList.toggle("hidden", !supportsFullscreen);
+  fullscreenBtnEl.textContent =
+    currentDisplayMode === "fullscreen" ? "退出全屏" : "全屏";
+
+  const maxH = ctx.containerDimensions?.maxHeight;
+  if (currentDisplayMode === "inline" && typeof maxH === "number" && maxH > 0) {
+    document.documentElement.classList.add("is-inline");
+    const targetH = Math.min(680, Math.max(460, maxH));
+    document.documentElement.style.setProperty("--inline-app-height", `${targetH}px`);
+  } else {
+    document.documentElement.classList.remove("is-inline");
+  }
 }
 
 async function refreshDecksAndGo(
@@ -1203,10 +1336,7 @@ async function refreshDecksAndGo(
   targetPage?: number,
   targetFilter?: FilterMode,
 ) {
-  const listRes = await app.callServerTool({
-    name: "app_list_decks",
-    arguments: {},
-  });
+  const listRes = await callServerTool("app_list_decks", {});
   const sc = listRes.structuredContent as
     | {
         configured?: boolean;
@@ -1248,65 +1378,65 @@ async function refreshDecksAndGo(
 async function init() {
   renderShell();
 
-  app.ontoolinput = (params) => {
-    const a = params.arguments as
-      | { deck?: string; page?: number; filter?: FilterMode }
-      | undefined;
-    if (a?.deck) pendingInitDeck = a.deck;
-    if (typeof a?.page === "number") pendingInitPage = a.page;
-    if (a?.filter) pendingInitFilter = a.filter;
-  };
+  if (!isWebBridge && app) {
+    app.ontoolinput = (params) => {
+      const a = params.arguments as
+        | { deck?: string; page?: number; filter?: FilterMode }
+        | undefined;
+      if (a?.deck) pendingInitDeck = a.deck;
+      if (typeof a?.page === "number") pendingInitPage = a.page;
+      if (a?.filter) pendingInitFilter = a.filter;
+    };
 
-  app.ontoolresult = (result) => {
-    const sc = result.structuredContent as
-      | {
-          configured?: boolean;
-          initialDeck?: string;
-          initialPage?: number;
-          initialFilter?: FilterMode;
-        }
-      | undefined;
-    if (!sc) return;
-    if (sc.configured === false) {
-      showUnconfiguredGuide("");
-      return;
-    }
-    if (sc.initialFilter) filterMode = sc.initialFilter;
-    if (decks.length && sc.initialDeck && getDeck(sc.initialDeck)) {
-      filterGroupEl.querySelectorAll(".seg-btn").forEach((el) => {
-        el.classList.toggle(
-          "active",
-          (el as HTMLElement).dataset.filter === filterMode,
-        );
-      });
-      const targetPage = sc.initialPage ?? 1;
-      if (
-        currentDeckFile === sc.initialDeck &&
-        currentPage === targetPage &&
-        currentSlide
-      ) {
+    app.ontoolresult = (result) => {
+      const sc = result.structuredContent as
+        | {
+            configured?: boolean;
+            initialDeck?: string;
+            initialPage?: number;
+            initialFilter?: FilterMode;
+          }
+        | undefined;
+      if (!sc) return;
+      if (sc.configured === false) {
+        showUnconfiguredGuide("");
         return;
       }
-      goToSlide(sc.initialDeck, targetPage);
-    } else if (sc.initialDeck) {
-      // Course may have been configured/switched via open_ppt_reader
-      if (decks.length) {
-        refreshDecksAndGo(sc.initialDeck, sc.initialPage, sc.initialFilter);
-      } else {
-        pendingInitDeck = sc.initialDeck ?? pendingInitDeck;
-        pendingInitPage = sc.initialPage ?? pendingInitPage;
-        pendingInitFilter = sc.initialFilter ?? pendingInitFilter;
+      if (sc.initialFilter) filterMode = sc.initialFilter;
+      if (decks.length && sc.initialDeck && getDeck(sc.initialDeck)) {
+        filterGroupEl.querySelectorAll(".seg-btn").forEach((el) => {
+          el.classList.toggle(
+            "active",
+            (el as HTMLElement).dataset.filter === filterMode,
+          );
+        });
+        const targetPage = sc.initialPage ?? 1;
+        if (
+          currentDeckFile === sc.initialDeck &&
+          currentPage === targetPage &&
+          currentSlide
+        ) {
+          return;
+        }
+        goToSlide(sc.initialDeck, targetPage);
+      } else if (sc.initialDeck) {
+        if (decks.length) {
+          refreshDecksAndGo(sc.initialDeck, sc.initialPage, sc.initialFilter);
+        } else {
+          pendingInitDeck = sc.initialDeck ?? pendingInitDeck;
+          pendingInitPage = sc.initialPage ?? pendingInitPage;
+          pendingInitFilter = sc.initialFilter ?? pendingInitFilter;
+        }
       }
-    }
-  };
+    };
 
-  app.onhostcontextchanged = (ctx) => {
-    if (ctx.theme) applyDocumentTheme(ctx.theme);
-    if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
-  };
+    app.onhostcontextchanged = (ctx) => {
+      applyContext(ctx);
+    };
 
-  await app.connect();
-  applyContext(app.getHostContext());
+    await app.connect();
+    applyContext(app.getHostContext());
+  }
 
   await refreshDecksAndGo(pendingInitDeck, pendingInitPage, pendingInitFilter);
 }

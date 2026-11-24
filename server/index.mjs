@@ -1,20 +1,19 @@
 #!/usr/bin/env node
-import crypto from "node:crypto";
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-
-const execFileAsync = promisify(execFile);
+import { createPptCore } from "./core.mjs";
+import { startWebBridge } from "./web_bridge.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
@@ -30,290 +29,22 @@ function parseArgs() {
 }
 
 const { dataDir: DATA_DIR } = parseArgs();
-const ENV_COURSE_DIR = (process.env.PPT_COURSE_DIR || "").trim();
-const ENV_ANNOTATIONS_PATH = (process.env.PPT_ANNOTATIONS_PATH || "").trim();
-
 const UI_HTML_PATH = path.join(PLUGIN_ROOT, "ui", "dist", "app.html");
-const CROP_HELPER_PATH = path.join(PLUGIN_ROOT, "scripts", "crop_helper.py");
-
-const CACHE_DIR = path.join(DATA_DIR, "cache");
-const CROPS_DIR = path.join(DATA_DIR, "crops");
-const STATE_PATH = path.join(DATA_DIR, "state.json");
-const OVERRIDES_PATH = path.join(DATA_DIR, "overrides.json");
-
 const APP_URI = "ui://ppt-reader/app.html";
 const MIME_TYPE = "text/html;profile=mcp-app";
 
-fs.mkdirSync(CACHE_DIR, { recursive: true });
-fs.mkdirSync(CROPS_DIR, { recursive: true });
+const core = createPptCore({
+  pluginRoot: PLUGIN_ROOT,
+  dataDir: DATA_DIR,
+  envCourseDir: process.env.PPT_COURSE_DIR || "",
+  envAnnotationsPath: process.env.PPT_ANNOTATIONS_PATH || "",
+});
 
-function readJsonSafe(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJsonSafe(filePath, data) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-  fs.renameSync(tmp, filePath);
-}
-
-function resolveCourseConfig(overrideCourseDir, overrideAnnPath) {
-  const saved = readJsonSafe(STATE_PATH, {});
-  const courseDir =
-    (overrideCourseDir || "").trim() ||
-    (saved.courseDir || "").trim() ||
-    ENV_COURSE_DIR;
-
-  let annotationsPath = (overrideAnnPath || "").trim();
-  if (!annotationsPath && !overrideCourseDir && (saved.annotationsPath || "").trim()) {
-    annotationsPath = saved.annotationsPath.trim();
-  }
-  if (!annotationsPath && !overrideCourseDir && ENV_ANNOTATIONS_PATH) {
-    annotationsPath = ENV_ANNOTATIONS_PATH;
-  }
-  if (!annotationsPath && courseDir) {
-    const candidates = [
-      path.join(courseDir, "标注版PPT", "study_annotations.json"),
-      path.join(courseDir, "study_annotations.json"),
-    ];
-    annotationsPath = candidates.find((p) => fs.existsSync(p)) || "";
-  }
-  return { courseDir, annotationsPath, saved };
-}
-
-async function getPdfPageCount(pdfPath) {
-  const { stdout } = await execFileAsync("pdfinfo", [pdfPath], {
-    maxBuffer: 2 * 1024 * 1024,
-  });
-  for (const line of stdout.split(/\r?\n/)) {
-    if (line.startsWith("Pages:")) {
-      const n = parseInt(line.slice("Pages:".length).trim(), 10);
-      if (Number.isInteger(n) && n > 0) return n;
-    }
-  }
-  throw new Error(`Could not determine page count for ${pdfPath}`);
-}
-
-async function synthesizeAnnotationsFromDir(courseDir) {
-  if (!courseDir || !fs.existsSync(courseDir)) {
-    return null;
-  }
-  const pdfFiles = fs
-    .readdirSync(courseDir)
-    .filter((f) => f.toLowerCase().endsWith(".pdf") && !f.startsWith("."))
-    .sort((a, b) => a.localeCompare(b, "zh-CN"));
-
-  if (!pdfFiles.length) {
-    return null;
-  }
-
-  const decks = [];
-  let totalPages = 0;
-  for (const file of pdfFiles) {
-    const fullPath = path.join(courseDir, file);
-    const pageCount = await getPdfPageCount(fullPath);
-    totalPages += pageCount;
-    const title = file.replace(/\.pdf$/i, "");
-    const pages = [];
-    for (let p = 1; p <= pageCount; p++) {
-      pages.push({
-        page: p,
-        priority: "medium",
-        tag: "未分级",
-        title: `第 ${p} 页`,
-        tip: "尚未生成 AI 标注：可点击左侧分级徽章手动标记，或让 AI 按课程大纲批量生成重点标注",
-      });
-    }
-    decks.push({
-      file,
-      title,
-      day: 1,
-      pageCount,
-      summary: { high: 0, medium: pageCount, low: 0 },
-      pages,
-    });
-  }
-
-  return {
-    courseDir,
-    annotatedDir: path.join(courseDir, "标注版PPT"),
-    synthesized: true,
-    totalPages,
-    summary: { high: 0, medium: totalPages, low: 0 },
-    decks,
-  };
-}
-
-async function loadMergedAnnotations(overrideCourseDir, overrideAnnPath) {
-  const { courseDir, annotationsPath } = resolveCourseConfig(
-    overrideCourseDir,
-    overrideAnnPath,
-  );
-
-  let base = null;
-  if (annotationsPath && fs.existsSync(annotationsPath)) {
-    base = readJsonSafe(annotationsPath, null);
-  }
-  if (!base && courseDir) {
-    base = await synthesizeAnnotationsFromDir(courseDir);
-  }
-  if (!base || !Array.isArray(base.decks) || !base.decks.length) {
-    return {
-      configured: false,
-      courseDir: courseDir || "",
-      annotationsPath: annotationsPath || "",
-      totalPages: 0,
-      summary: { high: 0, medium: 0, low: 0 },
-      decks: [],
-    };
-  }
-
-  const effectiveCourseDir = courseDir || base.courseDir || "";
-  const overrides = readJsonSafe(OVERRIDES_PATH, {});
-  const totalSummary = { high: 0, medium: 0, low: 0 };
-
-  const decks = base.decks.map((d) => {
-    const summary = { high: 0, medium: 0, low: 0 };
-    const pages = d.pages.map((p) => {
-      const key = `${effectiveCourseDir}::${d.file}::${p.page}`;
-      const legacyKey = `${d.file}::${p.page}`;
-      const ov = overrides[key] || overrides[legacyKey];
-      const merged = ov
-        ? {
-            ...p,
-            priority: ov.priority || p.priority,
-            tip: typeof ov.tip === "string" && ov.tip.trim() ? ov.tip.trim() : p.tip,
-            overridden: true,
-          }
-        : p;
-      summary[merged.priority] = (summary[merged.priority] || 0) + 1;
-      totalSummary[merged.priority] = (totalSummary[merged.priority] || 0) + 1;
-      return merged;
-    });
-    return { ...d, summary, pages };
-  });
-
-  return {
-    ...base,
-    configured: true,
-    courseDir: effectiveCourseDir,
-    annotationsPath,
-    summary: totalSummary,
-    decks,
-  };
-}
-
-function validateDeckAndPage(annotations, deckName, pageNum) {
-  const deck = annotations.decks.find((d) => d.file === deckName);
-  if (!deck) {
-    throw new Error(`Unknown deck: ${deckName}`);
-  }
-  const page = Number(pageNum);
-  if (!Number.isInteger(page) || page < 1 || page > deck.pageCount) {
-    throw new Error(`Invalid page ${pageNum} for ${deckName} (1..${deck.pageCount})`);
-  }
-  return { deck, page };
-}
-
-function slideCacheKey(courseDir, deckFile) {
-  return crypto
-    .createHash("sha1")
-    .update(`${courseDir}::${deckFile}`)
-    .digest("hex")
-    .slice(0, 14);
-}
-
-function unescapeXml(str) {
-  return str
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-function parseBboxHtml(html) {
-  const pageMatch = html.match(/<page\s+width="([\d.]+)"\s+height="([\d.]+)"/);
-  const pageWidth = pageMatch ? parseFloat(pageMatch[1]) : 720;
-  const pageHeight = pageMatch ? parseFloat(pageMatch[2]) : 540;
-  const words = [];
-  const wordRe =
-    /<word\s+xMin="([\d.]+)"\s+yMin="([\d.]+)"\s+xMax="([\d.]+)"\s+yMax="([\d.]+)">([\s\S]*?)<\/word>/g;
-  let m;
-  while ((m = wordRe.exec(html)) !== null) {
-    const text = unescapeXml(m[5]).trim();
-    if (!text) continue;
-    words.push({
-      text,
-      xMin: parseFloat(m[1]),
-      yMin: parseFloat(m[2]),
-      xMax: parseFloat(m[3]),
-      yMax: parseFloat(m[4]),
-    });
-  }
-  return { pageWidth, pageHeight, words };
-}
-
-async function ensureSlideAssets(annotations, deckFile, page) {
-  const courseDir = annotations.courseDir;
-  const key = slideCacheKey(courseDir, deckFile);
-  const pngPrefix = path.join(CACHE_DIR, `${key}_p${page}`);
-  const pngPath = `${pngPrefix}.png`;
-  const bboxPath = path.join(CACHE_DIR, `${key}_p${page}.bbox.json`);
-
-  const origPdfPath = path.join(courseDir, deckFile);
-  if (!fs.existsSync(origPdfPath)) {
-    throw new Error(`PDF file not found: ${origPdfPath}`);
-  }
-
-  if (!fs.existsSync(pngPath)) {
-    await execFileAsync(
-      "pdftoppm",
-      ["-png", "-r", "150", "-f", String(page), "-l", String(page), "-singlefile", origPdfPath, pngPrefix],
-      { maxBuffer: 15 * 1024 * 1024 },
-    );
-  }
-
-  let bboxData = readJsonSafe(bboxPath, null);
-  if (!bboxData) {
-    const { stdout } = await execFileAsync(
-      "pdftotext",
-      ["-bbox", "-f", String(page), "-l", String(page), origPdfPath, "-"],
-      { maxBuffer: 10 * 1024 * 1024 },
-    );
-    bboxData = parseBboxHtml(stdout);
-    writeJsonSafe(bboxPath, bboxData);
-  }
-
-  return { pngPath, bboxData };
-}
-
-function pruneOldCrops(maxKeep = 40) {
-  try {
-    const files = fs
-      .readdirSync(CROPS_DIR)
-      .filter((f) => f.endsWith(".png"))
-      .map((f) => {
-        const full = path.join(CROPS_DIR, f);
-        return { full, mtime: fs.statSync(full).mtimeMs };
-      })
-      .sort((a, b) => b.mtime - a.mtime);
-    for (const item of files.slice(maxKeep)) {
-      fs.unlinkSync(item.full);
-    }
-  } catch (err) {
-    console.error("Failed to prune crops:", err);
-  }
-}
+let webBridge = null;
 
 const server = new Server(
   { name: "ppt-study-reader", version: "1.0.0" },
-  { capabilities: { tools: {}, resources: {} } },
+  { capabilities: { tools: {}, resources: {}, prompts: {} } },
 );
 
 const TOOLS = [
@@ -321,7 +52,7 @@ const TOOLS = [
     name: "open_ppt_reader",
     title: "打开 PPT 伴读",
     description:
-      "在 Antigravity 侧边栏打开带重点分级标注的 PPT 交互伴读器，支持左键框选（文字与图表通吃）、长按选整行和划词向 AI 提问。",
+      "在支持 MCP Apps 的客户端（Antigravity 侧边栏 / Claude Desktop 内嵌视图）打开带重点分级标注的 PPT 交互伴读器，支持左键框选（文字与图表通吃）、长按选整行和划词向 AI 提问。",
     inputSchema: {
       type: "object",
       properties: {
@@ -352,9 +83,100 @@ const TOOLS = [
     },
     _meta: {
       ui: { resourceUri: APP_URI },
+      "ui/resourceUri": APP_URI,
       "com.google.antigravity/ui": {
         entrypoints: [{ type: "aux_pane", title: "PPT 伴读" }],
       },
+    },
+  },
+  {
+    name: "start_web_reader",
+    title: "启动浏览器伴读视图",
+    description:
+      "为 Codex CLI 等终端客户端启动本地环回 Web 伴读界面（127.0.0.1），在浏览器中支持同样的鼠标左键框选/长按/划词，并可将选区与截图传回对话。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        courseDir: {
+          type: "string",
+          description: "可选，包含课程 PDF 文件的本地文件夹绝对路径",
+        },
+        annotationsPath: {
+          type: "string",
+          description: "可选，study_annotations.json 路径",
+        },
+        deck: {
+          type: "string",
+          description: "可选，初始打开的课件文件名",
+        },
+        page: {
+          type: "integer",
+          minimum: 1,
+          description: "可选，初始页码",
+        },
+        port: {
+          type: "integer",
+          minimum: 1024,
+          maximum: 65535,
+          description: "可选，本地端口（默认 4173，被占用时自动分配空闲端口）",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_ppt_crop",
+    title: "查看 PPT 选区截图",
+    description:
+      "根据【PPT伴读提问】里的选区截图ID（cropId），以标准 MCP 图像格式返回局部高清截图，便于 Claude Desktop、Codex 等跨平台客户端看懂架构图、公式和代码截图。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        cropId: {
+          type: "string",
+          description: "【PPT伴读提问】中附带的选区截图ID（如 crop_1700000000_ab12.png）",
+        },
+      },
+      required: ["cropId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_slide_image",
+    title: "获取指定 PPT 页面图像",
+    description:
+      "在任意 MCP 客户端（包括 Claude Desktop 与 Codex）中直接渲染指定课件页，返回重点标注信息、页面文本摘要与整页高清 PNG 图像。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deck: {
+          type: "string",
+          description: "课件文件名（如 01-导论.pdf）",
+        },
+        page: {
+          type: "integer",
+          minimum: 1,
+          description: "页码（从 1 开始）",
+        },
+      },
+      required: ["deck", "page"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_pending_ppt_question",
+    title: "读取浏览器伴读刚提交的提问",
+    description:
+      "用于 Codex CLI 等终端客户端：读取用户在浏览器伴读视图中最近一次鼠标框选/长按/划词提交的提问与选区截图。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        markConsumed: {
+          type: "boolean",
+          description: "是否标记为已读取（默认 true）",
+        },
+      },
+      additionalProperties: false,
     },
   },
   {
@@ -430,23 +252,36 @@ const TOOLS = [
   },
 ];
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools: TOOLS };
-});
-
-server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  return {
-    resources: [
-      {
-        uri: APP_URI,
-        name: "PPT 伴读交互界面",
-        description: "带重点分级标注与鼠标框选/长按提问的 PPT 阅读器",
-        mimeType: MIME_TYPE,
-        _meta: { ui: { prefersBorder: false } },
-      },
+const PROMPTS = [
+  {
+    name: "exam_prep_plan",
+    description: "按可用天数和课程 PDF 文件夹制定大学生期末冲刺/预习计划并生成标注版 PPT",
+    arguments: [
+      { name: "courseDir", description: "课程 PDF 文件夹路径", required: true },
+      { name: "days", description: "可用复习或预习天数（如 3 或 4）", required: false },
+      { name: "goal", description: "学习目标（期末冲刺 / 零基础预习）", required: false },
     ],
-  };
-});
+  },
+  {
+    name: "explain_ppt_selection",
+    description: "开启零基础大白话 PPT 伴读答疑模式（指导模型优先读取选区截图并结合重点分级作答）",
+    arguments: [],
+  },
+];
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+  resources: [
+    {
+      uri: APP_URI,
+      name: "PPT 伴读交互界面",
+      description: "带重点分级标注与鼠标框选/长按提问的 PPT 阅读器",
+      mimeType: MIME_TYPE,
+      _meta: { ui: { prefersBorder: false } },
+    },
+  ],
+}));
 
 server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
   if (req.params.uri !== APP_URI) {
@@ -465,223 +300,192 @@ server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
   };
 });
 
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: PROMPTS }));
+
+server.setRequestHandler(GetPromptRequestSchema, async (req) => {
+  const { name, arguments: pArgs = {} } = req.params;
+  if (name === "exam_prep_plan") {
+    const courseDir = pArgs.courseDir || "<请提供你的课程 PDF 文件夹路径>";
+    const days = pArgs.days || "3~4";
+    const goal = pArgs.goal || "期末复习冲刺";
+    return {
+      description: "课程复习/预习规划与逐页标注工作流",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `请帮我用 ${days} 天时间完成目录 "${courseDir}" 下课程 PDF 的「${goal}」。请按以下步骤执行：\n1. 使用 scripts/extract_index.py 扫描全部 PDF 页数与提纲；\n2. 结合我的目标制定分天计划与 🟢重点精读 / 🟡速览了解 / 🔴可跳过 逐页标注并保存为 study_annotations.json；\n3. 运行 scripts/annotate_all.mjs 无损生成离线《标注版PPT》；\n4. 调用 open_ppt_reader（或在终端下调用 start_web_reader）为我打开交互伴读界面。`,
+          },
+        },
+      ],
+    };
+  }
+  if (name === "explain_ppt_selection") {
+    return {
+      description: "PPT 伴读大白话答疑规范",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: "请进入「PPT 伴读」答疑模式：后续每次收到以【PPT伴读提问】开头的消息时，若带有 选区截图ID，请先调用 MCP 工具 read_ppt_crop 查看局部截图再回答；优先用零基础大白话+直观类比讲清核心直觉与常见考坑，并根据页面红/黄/绿重要程度把握讲解深浅。",
+          },
+        },
+      ],
+    };
+  }
+  throw new Error(`Unknown prompt: ${name}`);
+});
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const name = req.params.name;
   const args = req.params.arguments || {};
 
   try {
     if (name === "open_ppt_reader") {
-      const annotations = await loadMergedAnnotations(
-        args.courseDir,
-        args.annotationsPath,
-      );
-
-      if (!annotations.configured) {
+      const res = await core.openReader(args);
+      if (!res.configured) {
         return {
           content: [
             {
               type: "text",
-              text: "尚未指定课程 PPT 目录。请在对话中告诉我你的课程 PDF 文件夹路径（或通过 open_ppt_reader 的 courseDir 参数传入，或在 mcp_config.json 中配置 PPT_COURSE_DIR）。",
+              text: "尚未指定课程 PPT 目录。请在对话中告诉我你的课程 PDF 文件夹路径（或通过 open_ppt_reader 的 courseDir 参数传入，或在配置文件中设置 PPT_COURSE_DIR）。",
             },
           ],
-          structuredContent: {
-            configured: false,
-            courseDir: annotations.courseDir,
-            decks: [],
-          },
+          structuredContent: res,
         };
       }
-
-      const saved = readJsonSafe(STATE_PATH, {});
-      const sameCourse = saved.courseDir === annotations.courseDir;
-      let deckName = args.deck || (sameCourse ? saved.deck : "") || annotations.decks[0].file;
-      let matchedDeck = annotations.decks.find((d) => d.file === deckName);
-      if (!matchedDeck) {
-        matchedDeck = annotations.decks[0];
-        deckName = matchedDeck.file;
-      }
-      let page = Number.isInteger(args.page)
-        ? args.page
-        : sameCourse
-          ? saved.page || 1
-          : 1;
-      page = Math.max(1, Math.min(matchedDeck.pageCount, page));
-      const filter = ["all", "high", "nonlow"].includes(args.filter)
-        ? args.filter
-        : saved.filter || "all";
-
-      writeJsonSafe(STATE_PATH, {
-        courseDir: annotations.courseDir,
-        annotationsPath: annotations.annotationsPath,
-        deck: deckName,
-        page,
-        filter,
-      });
-
-      const compactDecks = annotations.decks.map((d) => ({
-        file: d.file,
-        title: d.title,
-        day: d.day,
-        pageCount: d.pageCount,
-        summary: d.summary,
-      }));
-
       return {
         content: [
           {
             type: "text",
-            text: `已在侧边栏打开 PPT 伴读：${matchedDeck.title} 第 ${page}/${matchedDeck.pageCount} 页（筛选：${filter}）。可在右侧用左键拖拽框选（文字/图表通吃）或长按选中整行直接向我提问。`,
+            text: `已打开 PPT 伴读：${res.initialDeckTitle} 第 ${res.initialPage}/${res.initialDeckPageCount} 页（筛选：${res.initialFilter}）。若在支持 MCP Apps UI 的客户端（Antigravity / Claude Desktop）中，可直接在可视化窗口左键框选或长按整行向我提问；若在纯终端客户端（如 Codex CLI），可调用 start_web_reader 在浏览器中打开交互视图。`,
+          },
+        ],
+        structuredContent: res,
+      };
+    }
+
+    if (name === "start_web_reader") {
+      if (args.courseDir || args.annotationsPath || args.deck || args.page) {
+        await core.openReader(args);
+      }
+      const list = await core.listDecks();
+      if (!webBridge) {
+        const reqPort = Number.isInteger(args.port) ? args.port : 4173;
+        webBridge = await startWebBridge(core, { port: reqPort, uiHtmlPath: UI_HTML_PATH });
+      }
+      const statusHint = list.configured
+        ? `当前已加载课程目录：${list.courseDir}（共 ${list.decks.length} 份 PDF，${list.totalPages} 页）。`
+        : "提示：当前尚未配置课程目录，请先传 courseDir 参数或告知我你的 PDF 文件夹路径。";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `PPT 伴读浏览器交互视图已启动：${webBridge.url}\n${statusHint}\n\n在浏览器打开上方链接即可左键拖拽框选（文字/图表通吃）、原地长按整行或纯划词；点击“提问”后，问题与局部高清截图会自动保存并复制到剪贴板，切回 Codex 粘贴或直接说“讲一下我刚在浏览器里选的内容”（我会调用 get_pending_ppt_question 读取图文）即可！`,
           },
         ],
         structuredContent: {
-          configured: true,
-          courseDir: annotations.courseDir,
-          synthesized: Boolean(annotations.synthesized),
-          initialDeck: deckName,
-          initialPage: page,
-          initialFilter: filter,
-          totalPages: annotations.totalPages,
-          decks: compactDecks,
+          url: webBridge.url,
+          port: webBridge.port,
+          configured: list.configured,
+          courseDir: list.courseDir,
+          deckCount: list.decks.length,
+          totalPages: list.totalPages,
         },
       };
     }
 
-    if (name === "app_list_decks") {
-      const annotations = await loadMergedAnnotations();
-      const saved = readJsonSafe(STATE_PATH, {});
+    if (name === "read_ppt_crop") {
+      const img = core.readCropImage({ cropId: args.cropId });
+      return {
+        content: [
+          { type: "text", text: `选区高清截图（${img.cropId}）：` },
+          { type: "image", data: img.base64, mimeType: img.mimeType },
+        ],
+      };
+    }
+
+    if (name === "get_slide_image") {
+      const slide = await core.getSlide({ deck: args.deck, page: args.page });
       return {
         content: [
           {
             type: "text",
-            text: annotations.configured
-              ? `Loaded ${annotations.decks.length} decks (${annotations.totalPages} pages).`
+            text: `课件：${slide.deckTitle} (${slide.deck}) 第 ${slide.page}/${slide.pageCount} 页\n分级：[${slide.annotation.priority}] ${slide.annotation.tag}\n提示：${slide.annotation.tip}\n文本摘录：${slide.textSnippet}`,
+          },
+          { type: "image", data: slide.base64, mimeType: "image/png" },
+        ],
+      };
+    }
+
+    if (name === "get_pending_ppt_question") {
+      const markConsumed = args.markConsumed !== false;
+      const pending = core.getPendingQuestion({ markConsumed });
+      if (!pending.found) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "暂未检测到浏览器伴读提交的待回答问题。请先在浏览器伴读视图中左键框选/长按选中内容并点击“提问”。",
+            },
+          ],
+        };
+      }
+      const content = [
+        {
+          type: "text",
+          text: `${pending.text}\n（提交时间：${pending.savedAt}${pending.consumed ? "，此前已读取过" : ""}）`,
+        },
+      ];
+      if (pending.cropImage) {
+        content.push({
+          type: "image",
+          data: pending.cropImage.base64,
+          mimeType: pending.cropImage.mimeType,
+        });
+      }
+      return { content };
+    }
+
+    if (name === "app_list_decks") {
+      const sc = await core.listDecks();
+      return {
+        content: [
+          {
+            type: "text",
+            text: sc.configured
+              ? `Loaded ${sc.decks.length} decks (${sc.totalPages} pages).`
               : "Course directory not configured yet.",
           },
         ],
-        structuredContent: {
-          configured: annotations.configured,
-          courseDir: annotations.courseDir,
-          synthesized: Boolean(annotations.synthesized),
-          totalPages: annotations.totalPages,
-          summary: annotations.summary,
-          savedState: saved,
-          decks: annotations.decks,
-        },
+        structuredContent: sc,
       };
     }
 
     if (name === "app_get_slide") {
-      const annotations = await loadMergedAnnotations();
-      if (!annotations.configured) {
-        throw new Error("Course directory is not configured.");
-      }
-      const { deck, page } = validateDeckAndPage(annotations, args.deck, args.page);
-      const { pngPath, bboxData } = await ensureSlideAssets(annotations, deck.file, page);
-      const pngBytes = fs.readFileSync(pngPath);
-      const imageDataUrl = `data:image/png;base64,${pngBytes.toString("base64")}`;
-      const pageAnn = deck.pages[page - 1];
-
-      const prevSaved = readJsonSafe(STATE_PATH, {});
-      writeJsonSafe(STATE_PATH, {
-        ...prevSaved,
-        courseDir: annotations.courseDir,
-        annotationsPath: annotations.annotationsPath,
-        deck: deck.file,
-        page,
-      });
-
+      const slide = await core.getSlide(args);
+      const { base64, pngPath, textSnippet, ...publicSlide } = slide;
       return {
-        content: [{ type: "text", text: `${deck.file} page ${page}/${deck.pageCount}` }],
-        structuredContent: {
-          deck: deck.file,
-          deckTitle: deck.title,
-          day: deck.day,
-          page,
-          pageCount: deck.pageCount,
-          annotation: pageAnn,
-          imageDataUrl,
-          pageWidth: bboxData.pageWidth,
-          pageHeight: bboxData.pageHeight,
-          words: bboxData.words,
-        },
+        content: [{ type: "text", text: `${slide.deck} page ${slide.page}/${slide.pageCount}` }],
+        structuredContent: publicSlide,
       };
     }
 
     if (name === "app_crop_selection") {
-      const annotations = await loadMergedAnnotations();
-      if (!annotations.configured) {
-        throw new Error("Course directory is not configured.");
-      }
-      const { deck, page } = validateDeckAndPage(annotations, args.deck, args.page);
-      const { pngPath } = await ensureSlideAssets(annotations, deck.file, page);
-
-      const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0));
-      const nx1 = clamp01(args.nx1);
-      const ny1 = clamp01(args.ny1);
-      const nx2 = clamp01(args.nx2);
-      const ny2 = clamp01(args.ny2);
-
-      const cropName = `crop_${Date.now()}_${crypto.randomBytes(2).toString("hex")}.png`;
-      const cropPath = path.join(CROPS_DIR, cropName);
-
-      const { stdout } = await execFileAsync("python3", [
-        CROP_HELPER_PATH,
-        "--src",
-        pngPath,
-        "--dst",
-        cropPath,
-        "--nx1",
-        String(nx1),
-        "--ny1",
-        String(ny1),
-        "--nx2",
-        String(nx2),
-        "--ny2",
-        String(ny2),
-      ]);
-      pruneOldCrops(40);
-      const cropInfo = JSON.parse(stdout);
+      const sc = await core.cropSelection(args);
       return {
-        content: [{ type: "text", text: `Saved crop: ${cropInfo.cropPath}` }],
-        structuredContent: {
-          cropPath: cropInfo.cropPath,
-          width: cropInfo.width,
-          height: cropInfo.height,
-          selectedText: args.selectedText || "",
-        },
+        content: [{ type: "text", text: `Saved crop: ${sc.cropId}` }],
+        structuredContent: sc,
       };
     }
 
     if (name === "app_set_slide_priority") {
-      const annotations = await loadMergedAnnotations();
-      if (!annotations.configured) {
-        throw new Error("Course directory is not configured.");
-      }
-      const { deck, page } = validateDeckAndPage(annotations, args.deck, args.page);
-      const prio = args.priority;
-      if (!["high", "medium", "low"].includes(prio)) {
-        throw new Error(`Invalid priority: ${prio}`);
-      }
-      const overrides = readJsonSafe(OVERRIDES_PATH, {});
-      const key = `${annotations.courseDir}::${deck.file}::${page}`;
-      const prev = overrides[key] || {};
-      overrides[key] = {
-        priority: prio,
-        tip: typeof args.tip === "string" && args.tip.trim() ? args.tip.trim() : prev.tip,
-      };
-      writeJsonSafe(OVERRIDES_PATH, overrides);
-
-      const updated = await loadMergedAnnotations();
-      const updatedDeck = updated.decks.find((d) => d.file === deck.file);
-      const pageAnn = updatedDeck.pages[page - 1];
+      const sc = await core.setSlidePriority(args);
       return {
-        content: [{ type: "text", text: `Updated ${deck.file} p${page} -> ${prio}` }],
-        structuredContent: {
-          deck: deck.file,
-          page,
-          annotation: pageAnn,
-          summary: updatedDeck.summary,
-        },
+        content: [{ type: "text", text: `Updated ${sc.deck} p${sc.page} -> ${args.priority}` }],
+        structuredContent: sc,
       };
     }
 
@@ -694,6 +498,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     };
   }
 });
+
+async function shutdown() {
+  if (webBridge) {
+    try {
+      await webBridge.close();
+    } catch {
+      // ignore
+    }
+    webBridge = null;
+  }
+}
+
+process.on("SIGINT", async () => {
+  await shutdown();
+  process.exit(0);
+});
+process.on("SIGTERM", async () => {
+  await shutdown();
+  process.exit(0);
+});
+process.stdin.on("end", () => {
+  shutdown().catch(() => {});
+});
+server.onclose = () => {
+  shutdown().catch(() => {});
+};
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

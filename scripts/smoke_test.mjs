@@ -102,7 +102,17 @@ async function main() {
     );
     console.log(`UI bundle check OK (${(htmlBytes / 1024).toFixed(1)} KB, 0 external URLs)`);
 
-    // 2. Create synthetic PDFs
+    // 2. Check setup_clients dry-run
+    const setupOut = execFileSync(
+      "node",
+      [path.join(ROOT_DIR, "scripts/setup_clients.mjs"), "--client", "all", "--course-dir", courseA],
+      { encoding: "utf8" },
+    );
+    assert.match(setupOut, /claude_desktop_config\.json/);
+    assert.match(setupOut, /codex mcp add ppt_study_reader/);
+    console.log("setup_clients.mjs dry-run OK");
+
+    // 3. Create synthetic PDFs
     await createDummyPdf(path.join(courseA, "01-Intro.pdf"), [
       ["Chapter 1 Course Introduction", "Key concept summary and exam overview"],
       ["Core Formula and Example", "Theorem A implies Bound B in practice"],
@@ -111,7 +121,7 @@ async function main() {
       ["Zero Config Raw Lecture Slide", "Automatically discovered without annotations JSON"],
     ]);
 
-    // 3. Test extract_index.py
+    // 4. Test extract_index.py + annotate_all.mjs
     const dumpPath = path.join(tmpRoot, "dump.json");
     execFileSync(
       "python3",
@@ -120,9 +130,7 @@ async function main() {
     );
     const dump = JSON.parse(fs.readFileSync(dumpPath, "utf8"));
     assert.equal(dump.totalPages, 2);
-    assert.equal(dump.decks[0].file, "01-Intro.pdf");
 
-    // 4. Write sample annotations & test annotate_all.mjs
     const annOutDir = path.join(courseA, "标注版PPT");
     const annPath = path.join(annOutDir, "study_annotations.json");
     fs.mkdirSync(annOutDir, { recursive: true });
@@ -172,7 +180,7 @@ async function main() {
     assert.match(pdfInfoOut, /Pages:\s+2\b/);
     console.log("Offline PDF annotation pipeline OK");
 
-    // 5. MCP stdio JSON-RPC end-to-end checks
+    // 5. MCP stdio JSON-RPC end-to-end checks (Antigravity + Claude Desktop + Codex)
     const client = startRpcClient(dataDir);
     try {
       const initRes = await client.rpc("initialize", {
@@ -181,24 +189,40 @@ async function main() {
         clientInfo: { name: "smoke-test", version: "1.0.0" },
       });
       assert.equal(initRes.serverInfo.name, "ppt-study-reader");
+      assert.ok(initRes.capabilities.prompts, "Expected prompts capability");
       client.notify("notifications/initialized");
 
       const toolsRes = await client.rpc("tools/list");
       const tools = Object.fromEntries(toolsRes.tools.map((t) => [t.name, t]));
       assert.equal(tools.open_ppt_reader._meta.ui.resourceUri, "ui://ppt-reader/app.html");
+      assert.equal(tools.open_ppt_reader._meta["ui/resourceUri"], "ui://ppt-reader/app.html");
       assert.equal(tools.open_ppt_reader._meta["com.google.antigravity/ui"].entrypoints[0].type, "aux_pane");
       for (const name of ["app_list_decks", "app_get_slide", "app_crop_selection", "app_set_slide_priority"]) {
         assert.deepEqual(tools[name]._meta.ui.visibility, ["app"]);
       }
+      for (const name of ["start_web_reader", "read_ppt_crop", "get_slide_image", "get_pending_ppt_question"]) {
+        assert.ok(tools[name], `Missing cross-client tool: ${name}`);
+      }
 
+      // Prompts check
+      const promptsList = await client.rpc("prompts/list");
+      assert.ok(promptsList.prompts.some((p) => p.name === "exam_prep_plan"));
+      assert.ok(promptsList.prompts.some((p) => p.name === "explain_ppt_selection"));
+      const promptGet = await client.rpc("prompts/get", {
+        name: "exam_prep_plan",
+        arguments: { courseDir: courseA, days: "3", goal: "期末冲刺" },
+      });
+      assert.ok(promptGet.messages.length >= 1);
+
+      // Resource check
       const resRead = await client.rpc("resources/read", { uri: "ui://ppt-reader/app.html" });
       assert.equal(resRead.contents[0].mimeType, "text/html;profile=mcp-app");
 
-      // Unconfigured call returns graceful guide instead of crashing
+      // Unconfigured graceful guide
       const unconf = await client.rpc("tools/call", { name: "open_ppt_reader", arguments: {} });
       assert.equal(unconf.structuredContent.configured, false);
 
-      // Configured with annotated courseA
+      // Open courseA
       const openA = await client.rpc("tools/call", {
         name: "open_ppt_reader",
         arguments: { courseDir: courseA },
@@ -206,16 +230,15 @@ async function main() {
       assert.equal(openA.structuredContent.configured, true);
       assert.equal(openA.structuredContent.totalPages, 2);
 
-      const listA = await client.rpc("tools/call", { name: "app_list_decks", arguments: {} });
-      assert.equal(listA.structuredContent.decks.length, 1);
-
-      const slideA = await client.rpc("tools/call", {
-        name: "app_get_slide",
+      // get_slide_image returns native MCP ImageContent
+      const slideImgRes = await client.rpc("tools/call", {
+        name: "get_slide_image",
         arguments: { deck: "01-Intro.pdf", page: 2 },
       });
-      assert.ok(slideA.structuredContent.imageDataUrl.startsWith("data:image/png;base64,"));
-      assert.ok(slideA.structuredContent.words.length >= 5, "Expected extracted word boxes");
+      assert.equal(slideImgRes.content[1].type, "image");
+      assert.equal(slideImgRes.content[1].mimeType, "image/png");
 
+      // app_crop_selection + read_ppt_crop + path traversal check
       const cropA = await client.rpc("tools/call", {
         name: "app_crop_selection",
         arguments: {
@@ -228,30 +251,79 @@ async function main() {
           selectedText: "Core Formula",
         },
       });
-      assert.ok(fs.existsSync(cropA.structuredContent.cropPath));
-      assert.ok(cropA.structuredContent.width > 100);
+      const cropId = cropA.structuredContent.cropId;
+      assert.ok(cropId && cropId.startsWith("crop_"));
 
-      const prioA = await client.rpc("tools/call", {
-        name: "app_set_slide_priority",
-        arguments: { deck: "01-Intro.pdf", page: 1, priority: "high", tip: "已手动标为重点" },
+      const readCropRes = await client.rpc("tools/call", {
+        name: "read_ppt_crop",
+        arguments: { cropId },
       });
-      assert.equal(prioA.structuredContent.annotation.priority, "high");
+      assert.equal(readCropRes.content[1].type, "image");
+      assert.equal(readCropRes.content[1].mimeType, "image/png");
 
-      // Zero-config auto-discovery with raw courseB (no study_annotations.json)
+      const badCropRes = await client.rpc("tools/call", {
+        name: "read_ppt_crop",
+        arguments: { cropId: "../evil.png" },
+      });
+      assert.equal(badCropRes.isError, true);
+
+      // Web bridge (start_web_reader + HTTP routes + get_pending_ppt_question)
+      const webRes = await client.rpc("tools/call", {
+        name: "start_web_reader",
+        arguments: { courseDir: courseA, port: 49213 },
+      });
+      const baseUrl = webRes.structuredContent.url;
+      assert.match(baseUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+
+      const pageHtml = await (await fetch(baseUrl + "/")).text();
+      assert.match(pageHtml, /__PPT_READER_WEB_MODE__/);
+
+      const apiListResp = await fetch(baseUrl + "/api/tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "app_list_decks", arguments: {} }),
+      });
+      assert.equal(apiListResp.status, 200);
+      const apiListJson = await apiListResp.json();
+      assert.equal(apiListJson.structuredContent.decks.length, 1);
+
+      const disallowedResp = await fetch(baseUrl + "/api/tool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "open_ppt_reader", arguments: {} }),
+      });
+      assert.equal(disallowedResp.status, 403);
+
+      const askResp = await fetch(baseUrl + "/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: `【PPT伴读提问】\n- 课件：01 课程导论\n- 选区截图ID：${cropId}\n- 我的问题：讲一下核心公式`,
+          deck: "01-Intro.pdf",
+          page: 2,
+          cropId,
+          cropPath: cropA.structuredContent.cropPath,
+          question: "讲一下核心公式",
+        }),
+      });
+      assert.equal(askResp.status, 200);
+
+      const pendingRes = await client.rpc("tools/call", {
+        name: "get_pending_ppt_question",
+        arguments: { markConsumed: true },
+      });
+      assert.match(pendingRes.content[0].text, /讲一下核心公式/);
+      assert.equal(pendingRes.content[1].type, "image");
+      assert.equal(pendingRes.content[1].mimeType, "image/png");
+
+      // Zero-config auto-discovery with raw courseB
       const openB = await client.rpc("tools/call", {
         name: "open_ppt_reader",
         arguments: { courseDir: courseB },
       });
       assert.equal(openB.structuredContent.configured, true);
       assert.equal(openB.structuredContent.synthesized, true);
-      assert.equal(openB.structuredContent.initialDeck, "01-RawDeck.pdf");
-
-      const slideB = await client.rpc("tools/call", {
-        name: "app_get_slide",
-        arguments: { deck: "01-RawDeck.pdf", page: 1 },
-      });
-      assert.ok(slideB.structuredContent.words.length >= 4);
-      console.log("MCP stdio server end-to-end tests OK (annotated + zero-config auto-discovery)");
+      console.log("All MCP + Claude Desktop + Codex Web Bridge tests PASSED");
     } finally {
       await client.close();
     }

@@ -1,0 +1,12 @@
+# 将以下配置添加到 ~/.codex/config.toml（或运行：npm run setup -- --client codex --apply）
+
+[mcp_servers.ppt_study_reader]
+command = "node"
+args = [
+  "/ABSOLUTE/PATH/TO/ppt-study-reader/server/index.mjs",
+  "--data-dir=/ABSOLUTE/PATH/TO/ppt-study-reader-data"
+]
+
+[mcp_servers.ppt_study_reader.env]
+PPT_COURSE_DIR = "/ABSOLUTE/PATH/TO/YOUR/COURSE_PDFS"
+PPT_ANNOTATIONS_PATH = ""

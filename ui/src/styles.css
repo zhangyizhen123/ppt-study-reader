@@ -29,7 +29,16 @@ html, body {
   flex-direction: column;
   width: 100%;
   height: 100vh;
-  min-height: 420px;
+  min-height: 440px;
+}
+
+html.is-inline #app {
+  height: var(--inline-app-height, 560px);
+  max-height: 100vh;
+}
+
+.hidden {
+  display: none !important;
 }
 
 /* Top Toolbar */
