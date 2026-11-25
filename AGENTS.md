@@ -1,6 +1,6 @@
 # PPT 伴读与大学期末复习通用助手规范
 
-本仓库是一个跨客户端（支持 **Antigravity**、**Claude Desktop**、**Claude Code**、**Codex**）的大学课程 PPT 伴读与期末速通工具箱。在协助用户复习或答疑时，请遵守以下约定：
+本仓库是一个跨客户端（支持 **Antigravity**、**Claude 桌面版的 Chat 标签页**、**Claude Code**（桌面版 Code 标签页 / CLI / IDE）、**Codex**）的大学课程 PPT 伴读与期末速通工具箱。在协助用户复习或答疑时，请遵守以下约定：
 
 ## 1. 收到 `【PPT伴读提问】` 时的处理
 - **先看选区截图**：

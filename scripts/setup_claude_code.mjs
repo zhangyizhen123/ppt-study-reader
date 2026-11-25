@@ -55,7 +55,7 @@ export function upsertClaudeMd(filePath, block = claudeMdBlock()) {
 }
 
 export function setupClaudeCode({ repoRoot, serverEntry, courseDir, apply, skillsDir }) {
-  console.log("=== Claude Code ===");
+  console.log("=== Claude Code（桌面版 Code 标签页 / CLI / IDE）===");
   console.log("方式 1（推荐）：作为插件安装，在 Claude Code 里执行：");
   console.log("  /plugin marketplace add zhangyizhen123/ppt-study-reader");
   console.log("  /plugin install ppt-study-reader@ppt-study-reader");

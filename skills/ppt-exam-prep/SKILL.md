@@ -5,12 +5,12 @@ description: >-
   final-exam cramming or preview study pack: extracts all slide outlines,
   generates per-page high/medium/low priority annotations (`study_annotations.json`),
   produces non-destructive offline annotated PDFs (`标注版PPT/`), and launches the
-  interactive PPT study reader across Antigravity, Claude Desktop, Claude Code, and Codex.
+  interactive PPT study reader across Antigravity, Claude (desktop Chat tab and Claude Code), and Codex.
 ---
 
 # 大学生 PPT 期末速通 / 预习伴读工作流
 
-当你帮一位学生用有限天数（例如 3 天考前冲刺、4 天新课预习、周末突击）吃透某门大学课程的一堆 PDF 课件时，按以下 5 步执行（支持 Antigravity、Claude Desktop、Claude Code、Codex）：
+当你帮一位学生用有限天数（例如 3 天考前冲刺、4 天新课预习、周末突击）吃透某门大学课程的一堆 PDF 课件时，按以下 5 步执行（支持 Antigravity、Claude 桌面版 Chat、Claude Code、Codex；第 1、4 步要运行本地脚本，Claude 桌面版请在 Code 标签页里做）：
 
 ## Step 1: 盘点课程文件夹（只读扫描，绝不改动原件）
 
@@ -26,7 +26,7 @@ python3 "<REPO>/scripts/extract_index.py" \
 - `<TMP>`：系统临时目录，或当前会话的 scratchpad 目录（Windows 没有 `/tmp`）。Windows 上没有 `python3` 时用 `python`。
 - `<REPO>`：本工具的安装目录，按客户端定位：
   - Claude Code 插件：本 Skill 所在目录往上两级（`skills/ppt-exam-prep/../..`）；
-  - 本地克隆（如 `~/ppt-study-reader`）：Claude Code 的 setup 安装、Claude Desktop、Codex 都用它；
+  - 本地克隆（如 `~/ppt-study-reader`）：Claude Code 的 setup 安装、Claude 桌面版 Chat、Codex 都用它；
   - Antigravity：`~/.gemini/config/plugins/ppt-study-reader`。
 - 脚本会自动寻找支持中文路径的 poppler（Windows 上优先用 scoop 安装的版本，也可以用 `PPT_POPPLER_BIN` 环境变量指定）。
 - 若无法运行 shell，也可以直接调用 `open_ppt_reader({ courseDir })` + `get_slide_image` 浏览。
@@ -95,7 +95,7 @@ node "<REPO>/scripts/annotate_all.mjs" \
 
 ## Step 5: 按当前客户端打开交互伴读
 
-- **Antigravity / Claude Desktop（支持 MCP Apps UI）**：
+- **Antigravity / Claude 桌面版 Chat 标签页（支持 MCP Apps UI）**：
   调用 `open_ppt_reader`：
   ```json
   {
@@ -105,7 +105,7 @@ node "<REPO>/scripts/annotate_all.mjs" \
     "filter": "all"
   }
   ```
-- **Claude Code**：
+- **Claude Code（含桌面版 Code 标签页）**：
   调用 `start_web_reader`（传入相同的 `courseDir` 与 `annotationsPath`），把返回的 `http://127.0.0.1:<port>` 链接发给学生。
   然后立刻用 Bash 的 `run_in_background` 在后台运行返回的 `listenCommand`（提问监听器）：
   - 学生在浏览器点「提问」后它会退出，你会被自动唤醒：调用 `get_pending_ppt_question` 取回问题与选区截图后作答；

@@ -43,7 +43,7 @@ function main() {
   const opts = parseArgs();
   const validClients = new Set(["all", "antigravity", "claude", "claude-code", "codex"]);
   if (!validClients.has(opts.client)) {
-    console.error(`Invalid --client "${opts.client}". Expected: all|antigravity|claude|claude-code|codex`);
+    console.error(`Invalid --client "${opts.client}". Expected: all|antigravity|claude (桌面版 Chat)|claude-code (Claude Code / 桌面版 Code)|codex`);
     process.exit(1);
   }
 
@@ -64,7 +64,7 @@ function main() {
         },
       },
     };
-    console.log("=== Claude Desktop ===");
+    console.log("=== Claude 桌面版 · Chat 标签页（Code 标签页请用 --client claude-code）===");
     console.log(`配置文件路径参考：${getClaudeConfigHintPath()}`);
     console.log("将以下内容合并到 claude_desktop_config.json：");
     console.log(JSON.stringify(claudeSnippet, null, 2));

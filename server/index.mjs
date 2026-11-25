@@ -83,7 +83,7 @@ const TOOLS = [
     name: "open_ppt_reader",
     title: "打开 PPT 伴读",
     description:
-      "在支持 MCP Apps 的客户端（Antigravity 侧边栏 / Claude Desktop 内嵌视图）打开带重点分级标注的 PPT 交互伴读器，支持左键框选（文字与图表通吃）、长按选整行和划词向 AI 提问。Claude Code、Codex CLI 等不能渲染内嵌界面的客户端请改用 start_web_reader。",
+      "在支持 MCP Apps 的客户端（Antigravity 侧边栏 / Claude 桌面版 Chat 内嵌视图）打开带重点分级标注的 PPT 交互伴读器，支持左键框选（文字与图表通吃）、长按选整行和划词向 AI 提问。Claude Code、Codex CLI 等不能渲染内嵌界面的客户端请改用 start_web_reader。",
     inputSchema: {
       type: "object",
       properties: {
@@ -391,7 +391,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         content: [
           {
             type: "text",
-            text: `已打开 PPT 伴读：${res.initialDeckTitle} 第 ${res.initialPage}/${res.initialDeckPageCount} 页（筛选：${res.initialFilter}）。若在支持 MCP Apps UI 的客户端（Antigravity / Claude Desktop 的 Chat）中，可直接在可视化窗口左键框选或长按整行向我提问；若当前客户端显示不了内嵌界面（如 Claude Code、Codex CLI），请改用 start_web_reader 在浏览器中打开交互视图。`,
+            text: `已打开 PPT 伴读：${res.initialDeckTitle} 第 ${res.initialPage}/${res.initialDeckPageCount} 页（筛选：${res.initialFilter}）。若在支持 MCP Apps UI 的客户端（Antigravity / Claude 桌面版的 Chat 标签页）中，可直接在可视化窗口左键框选或长按整行向我提问；若当前客户端显示不了内嵌界面（如 Claude Code / 桌面版 Code 标签页、Codex CLI），请改用 start_web_reader 在浏览器中打开交互视图。`,
           },
         ],
         structuredContent: res,

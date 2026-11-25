@@ -1,6 +1,6 @@
 # PPT 伴读（ppt-study-reader）
 
-> 面向大学生的 AI 期末速通 & 新课预习 PPT 伴读工具箱（支持 Antigravity · Claude Desktop · Claude Code · OpenAI Codex）
+> 面向大学生的 AI 期末速通 & 新课预习 PPT 伴读工具箱（支持 Antigravity · Claude 桌面版（Chat / Code）· Claude Code CLI · OpenAI Codex）
 >
 > 把几百页密密麻麻的课程 PDF 变成**“绿/黄/红重点分级 + 离线《标注版 PPT》 + 交互式画框即问”**的学习流——零改动原课件，任何专业都能直接用。
 
@@ -11,8 +11,8 @@
 | 客户端 | 伴读交互方式 | 选区截图识图 | 复习规划 Skill & 规则 |
 | :--- | :--- | :--- | :--- |
 | **Antigravity** | 原生侧边栏（`aux_pane`）内嵌伴读，框选直发左侧对话 | 支持：`read_ppt_crop` / `read_file` | 支持：自动发现插件 `skills/` & `rules/` |
-| **Claude Desktop** | 原生 MCP Apps（SEP-1865）内嵌 / 全屏伴读，框选直发对话 | 支持：自动调用 `read_ppt_crop` 返回原生图像 | 支持：内置 MCP Prompts + `AGENTS.md` |
-| **Claude Code** | 对话内调用 `start_web_reader` 在浏览器交互；Claude 在后台挂起提问监听器，**点「提问」即自动送达，无需粘贴** | 支持：`get_pending_ppt_question` / `read_ppt_crop` | 支持：插件自带 Skill，或 setup 写入 `CLAUDE.md` + `~/.claude/skills/` |
+| **Claude 桌面版 · Chat** | 原生 MCP Apps（SEP-1865）内嵌 / 全屏伴读，框选直发对话 | 支持：自动调用 `read_ppt_crop` 返回原生图像 | 内置 MCP Prompts；生成标注版需在 Code 标签页 |
+| **Claude Code**（桌面版 Code 标签页 / CLI / IDE） | 对话内调用 `start_web_reader` 在浏览器交互；Claude 在后台挂起提问监听器，**点「提问」即自动送达，无需粘贴** | 支持：`get_pending_ppt_question` / `read_ppt_crop` | 支持：插件自带 Skill，或 setup 写入 `CLAUDE.md` + `~/.claude/skills/` |
 | **Codex (CLI / App)** | 对话内调用 `start_web_reader`（或 `npm run web`）在浏览器交互，支持自动回传问题与截图 | 支持：自动调用 `get_pending_ppt_question` / `read_ppt_crop` | 支持：仓库根目录 `AGENTS.md` + `~/.codex/skills/` |
 | **任意 PDF 阅读器** | `标注版PPT/` 离线高清矢量标注 PDF（iPad / GoodNotes / WPS / Edge） | — | — |
 
@@ -69,9 +69,21 @@ npm install --omit=dev
 
 ---
 
-### 2. Claude Desktop
+### 2. Claude（桌面版 Chat 标签页 / Claude Code）
 
-Claude Desktop 原生支持 MCP Apps（`ui://`）以及本服务暴露的原生图像工具（`read_ppt_crop` / `get_slide_image`）。
+Claude 桌面版里有两个标签页，接入方式不同：
+
+| 用在哪里 | 伴读方式 | 配置写在哪 |
+| :--- | :--- | :--- |
+| **Chat 标签页** | 伴读界面直接内嵌在对话里，框选后直接发消息 | 桌面版的 `claude_desktop_config.json` |
+| **Code 标签页**（就是 Claude Code，和 CLI、IDE 插件通用） | 在浏览器里伴读，提问自动送达对话 | Claude Code 插件，或课程目录的 `.mcp.json` |
+
+两边的配置互不影响，想两边都用就都配上。
+
+- **边看边问**：两边都可以。Chat 的内嵌界面最顺手。
+- **生成复习计划和《标注版 PPT》**：要运行本地脚本，请在 Code 标签页里做。
+
+#### 2.1 Chat 标签页
 
 ```bash
 git clone https://github.com/zhangyizhen123/ppt-study-reader.git ~/ppt-study-reader
@@ -80,17 +92,13 @@ npm install --omit=dev
 npm run setup -- --client claude --course-dir "/你的课程PPT文件夹路径"
 ```
 
-把打印出的 JSON（或参考 [`configs/claude_desktop_config.example.json`](configs/claude_desktop_config.example.json)）合并到你的 `claude_desktop_config.json`，重启 Claude Desktop 后：
-- 直接说：**“调用 `open_ppt_reader` 打开我的课件”**，界面会以内嵌/全屏交互卡片渲染；
-- 用鼠标左键框选或长按后点 **提问**，消息会自动带上 `选区截图ID`，Claude 会调用 `read_ppt_crop` 看到你框选的局部高清图来解答。
+1. 把打印出的 JSON 合并到 `claude_desktop_config.json`（也可以参考 [`configs/claude_desktop_config.example.json`](configs/claude_desktop_config.example.json)）。在桌面版的「设置 → 开发者 → 编辑配置」可以打开这个文件。
+2. 完全退出并重启桌面版，然后在 Chat 里说：**“调用 `open_ppt_reader` 打开我的课件”**，伴读界面会以内嵌或全屏卡片显示。
+3. 用鼠标左键框选或长按后点 **提问**，消息会自动带上 `选区截图ID`，Claude 会调用 `read_ppt_crop` 看你框选的局部高清图来解答。
 
----
-
-### 3. Claude Code（CLI / 桌面版 Code 标签页）
+#### 2.2 Code 标签页 / Claude Code
 
 **方式 A：插件安装（推荐，免 clone、免 npm install）**
-
-在 Claude Code 里执行：
 
 ```text
 /plugin marketplace add zhangyizhen123/ppt-study-reader
@@ -116,15 +124,17 @@ npm run setup -- --client claude-code --course-dir "/你的课程PPT文件夹路
 
 **提问自动送达**
 
+Code 标签页显示不了内嵌界面，所以改用浏览器伴读：
+
 1. 说「启动浏览器 PPT 伴读」：Claude 调用 `start_web_reader` 给出 `http://127.0.0.1:4173`，并在后台挂起提问监听器 `scripts/wait_question.mjs`。
-2. 你在浏览器里框选 / 长按 / 划词后点 **提问**，页面提示「已送达 AI」。
+2. 你在浏览器里框选、长按或划词后点 **提问**，页面提示「已送达 AI」。
 3. 监听器随即退出，Claude 被自动唤醒，调用 `get_pending_ppt_question` 拿到问题和选区截图后作答，答完再重新挂起监听。
 
-原理：MCP 服务没法主动往对话里发消息，但 Claude Code 的后台命令结束时会唤醒模型，监听器就是利用这一点。如果后台没有监听器，提问会照旧保存并复制到剪贴板。
+原理：MCP 服务没法主动往对话里发消息，但 Claude Code 的后台命令结束时会唤醒模型，监听器就是利用这一点。如果后台没有挂监听器，提问会照旧保存并复制到剪贴板。
 
 ---
 
-### 4. OpenAI Codex (CLI / App)
+### 3. OpenAI Codex (CLI / App)
 
 Codex CLI 在终端运行，本仓库同时提供 **`AGENTS.md` + Skill + 本地环回浏览器伴读桥（`127.0.0.1`）**：
 
@@ -209,7 +219,7 @@ ppt-study-reader/
 │   ├── crop_helper.py                 # 选区局部高清截图裁剪
 │   ├── _tools.py                      # Python 脚本共用的 poppler 定位与 UTF-8 输出
 │   ├── wait_question.mjs              # 浏览器提问监听器（Claude Code 后台挂起，提问自动送达）
-│   ├── setup_clients.mjs              # Claude Desktop / Claude Code / Codex / Antigravity 配置生成器
+│   ├── setup_clients.mjs              # Claude（Chat / Code）/ Codex / Antigravity 配置生成器
 │   ├── setup_claude_code.mjs          # Claude Code 课程目录配置（.mcp.json / CLAUDE.md / Skill）
 │   ├── build_ui.mjs                   # esbuild 单文件打包脚本（UI）
 │   ├── build_bundles.mjs              # esbuild 打包 dist/（插件免依赖运行）

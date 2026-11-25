@@ -116,7 +116,7 @@ async function main() {
     );
     assert.match(setupOut, /claude_desktop_config\.json/);
     assert.match(setupOut, /codex mcp add ppt_study_reader/);
-    assert.match(setupOut, /=== Claude Code ===/);
+    assert.match(setupOut, /=== Claude Code（/);
     console.log("setup_clients.mjs dry-run OK");
 
     // 2b. Claude Code setup --apply（写入课程目录，重复执行应幂等且保留用户内容）
@@ -226,7 +226,7 @@ async function main() {
     assert.match(pdfInfoOut, /Pages:\s+2\b/);
     console.log("Offline PDF annotation pipeline OK");
 
-    // 5. MCP stdio JSON-RPC end-to-end checks (Antigravity + Claude Desktop + Codex)
+    // 5. MCP stdio JSON-RPC end-to-end checks (Antigravity + Claude Chat/Code + Codex)
     const client = startRpcClient(dataDir);
     try {
       const initRes = await client.rpc("initialize", {
@@ -434,7 +434,7 @@ async function main() {
       });
       assert.equal(openB.structuredContent.configured, true);
       assert.equal(openB.structuredContent.synthesized, true);
-      console.log("All MCP + Claude Desktop + Codex Web Bridge tests PASSED");
+      console.log("All MCP + Claude Chat/Code + Codex Web Bridge tests PASSED");
     } finally {
       await client.close();
     }
