@@ -17,6 +17,9 @@ export function claudeMdBlock() {
 - **提问自动送达**：\`start_web_reader\` 返回的 \`listenCommand\` 要立刻用 Bash 的 \`run_in_background\` 在后台运行。
   - 用户在浏览器点「提问」后它会退出并带出问题：调用 \`get_pending_ppt_question\` 取回问题与选区截图，再作答；
   - 每答完一题，用同一条命令重新在后台挂起；输出 \`PPT_WAIT_TIMEOUT\` 时静默重新挂起；输出 \`PPT_BRIDGE_DOWN\` 时重新调用 \`start_web_reader\`。
+  - 监听器启动时若已有未读提问（监听断开期间提交的），会立即带出，不会漏接。
+  - 若本会话收到过 \`<channel source="ppt_study_reader">\` 推送（终端用 \`--dangerously-load-development-channels\` 启动时），提问会直接送达，不必再挂监听。
+  - 会话恢复（resume / compact）后，SessionStart hook 会提示重新挂监听并补收未读提问。
 - **收到 \`【PPT伴读提问】\`**：带 \`选区截图ID\` 时先调用 \`read_ppt_crop({ cropId })\` 看图再回答。
 - **讲解风格**：零基础大白话优先，用通俗类比和直观流程讲透核心直觉，联系真实题型或代码。
   - \`🔴 可跳过\` 的页：先用 1~2 句说明它是低优先级，再简明回答；

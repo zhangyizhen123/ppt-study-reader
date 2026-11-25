@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-import crypto from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -17,6 +15,7 @@ import {
 import { createPptCore } from "./core.mjs";
 import { startWebBridge } from "./web_bridge.mjs";
 import { applyToolEnv } from "./tools_env.mjs";
+import { defaultDataDir } from "./data_dir.mjs";
 
 applyToolEnv();
 
@@ -36,14 +35,6 @@ function dirHasPdf(dir) {
 const ENV_COURSE_DIR =
   (process.env.PPT_COURSE_DIR || "").trim() || (dirHasPdf(process.cwd()) ? process.cwd() : "");
 
-function courseDataKey(dir) {
-  const resolved = path.resolve(dir);
-  const norm = process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  const hash = crypto.createHash("sha1").update(norm).digest("hex").slice(0, 8);
-  const base = path.basename(resolved).replace(/[^\p{L}\p{N}_.-]+/gu, "_").slice(0, 40) || "course";
-  return `${base}-${hash}`;
-}
-
 function parseArgs() {
   let dataDir = "";
   for (const arg of process.argv.slice(2)) {
@@ -53,8 +44,7 @@ function parseArgs() {
   }
   if (!dataDir) {
     // 未显式指定时按课程分目录，避免多门课共用一份 state.json 互相覆盖
-    const base = path.join(os.homedir(), ".ppt-study-reader-data");
-    dataDir = ENV_COURSE_DIR ? path.join(base, courseDataKey(ENV_COURSE_DIR)) : path.join(base, "default");
+    dataDir = defaultDataDir(ENV_COURSE_DIR);
   }
   return { dataDir };
 }
@@ -73,10 +63,78 @@ const core = createPptCore({
 
 let webBridge = null;
 
+// Claude Code channels（研究预览）：声明 experimental["claude/channel"] 后，
+// 用户以 `claude --dangerously-load-development-channels server:<本服务在 .mcp.json 里的名字>` 启动时，
+// 浏览器里点「提问」会直接推送进会话（<channel source="..."> 标签），无需后台监听脚本。
+// 其他客户端会忽略这个实验能力，推送失败也不影响「后台监听 / 剪贴板」兜底路径。
+const CHANNEL_INSTRUCTIONS = [
+  "ppt-study-reader：若本会话以 channel 方式加载了本服务，用户在浏览器 PPT 伴读里点「提问」时，会以 <channel source=\"...\"> 事件推送进会话，内容即【PPT伴读提问】。没有收到过这种推送时，按 start_web_reader 返回的说明挂后台监听。",
+  "收到后：带选区截图ID时先调用 read_ppt_crop 看图，再按项目答疑规则作答；随后调用 get_pending_ppt_question({ markConsumed: true }) 或直接忽略均可（推送内容已完整）。",
+  "一旦本会话收到过这种推送，说明推送通道可用：不必再在后台运行 listenCommand 监听；若之前已挂着监听，可停掉它，它对同一问题的重复通知直接忽略。",
+].join("\n");
+
 const server = new Server(
   { name: "ppt-study-reader", version: "1.0.0" },
-  { capabilities: { tools: {}, resources: {}, prompts: {} } },
+  {
+    capabilities: {
+      tools: {},
+      resources: {},
+      prompts: {},
+      experimental: { "claude/channel": {} },
+    },
+    instructions: CHANNEL_INSTRUCTIONS,
+  },
 );
+
+// 把浏览器提问推送进会话（仅在客户端注册了 channel 时生效；否则客户端静默丢弃）。
+async function pushQuestionToChannel(entry) {
+  const meta = { deck: entry.deck || "", page: String(entry.page || "") };
+  if (entry.cropId) meta.crop_id = entry.cropId;
+  try {
+    await server.notification({
+      method: "notifications/claude/channel",
+      params: { content: entry.text || entry.question || "(空问题)", meta },
+    });
+    return true;
+  } catch (err) {
+    console.error("channel push failed:", err?.message || err);
+    return false;
+  }
+}
+
+async function ensureWebBridge(port = 4173) {
+  if (!webBridge) {
+    webBridge = await startWebBridge(core, { port, uiHtmlPath: UI_HTML_PATH });
+  }
+  return webBridge;
+}
+
+// 推送不依赖「谁占着 4173 端口」：每个会话（含 side chat）都会各起一个本服务进程，
+// 而浏览器只连其中一个。提问统一落盘到 pending_question.json（同一课程共用一个 dataDir），
+// 所以每个进程都盯着这个文件，发现新提问就推送给自己所在的会话；
+// 没注册 channel 的会话（桌面版等）会静默丢弃，不会打扰。
+const PENDING_FILE = path.join(DATA_DIR, "pending_question.json");
+let lastPushedSavedAt = (() => {
+  // 启动前就存在的旧提问不推送（此时 channel 可能还没注册）；遗漏的旧提问由 SessionStart hook / 监听器补查
+  try {
+    return JSON.parse(fs.readFileSync(PENDING_FILE, "utf8")).savedAt || "";
+  } catch {
+    return "";
+  }
+})();
+
+fs.watchFile(PENDING_FILE, { interval: 700, persistent: false }, () => {
+  let entry;
+  try {
+    entry = JSON.parse(fs.readFileSync(PENDING_FILE, "utf8"));
+  } catch {
+    return;
+  }
+  if (!entry || !entry.text || entry.consumed || !entry.savedAt) return;
+  if (entry.savedAt === lastPushedSavedAt) return;
+  lastPushedSavedAt = entry.savedAt;
+  pushQuestionToChannel(entry);
+});
 
 const TOOLS = [
   {
@@ -403,10 +461,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         await core.openReader(args);
       }
       const list = await core.listDecks();
-      if (!webBridge) {
-        const reqPort = Number.isInteger(args.port) ? args.port : 4173;
-        webBridge = await startWebBridge(core, { port: reqPort, uiHtmlPath: UI_HTML_PATH });
-      }
+      await ensureWebBridge(Number.isInteger(args.port) ? args.port : 4173);
       const statusHint = list.configured
         ? `当前已加载课程目录：${list.courseDir}（共 ${list.decks.length} 份 PDF，${list.totalPages} 页）。`
         : "提示：当前尚未配置课程目录，请先传 courseDir 参数或告知我你的 PDF 文件夹路径。";
@@ -421,8 +476,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               "",
               "用户在浏览器里左键拖拽框选（文字/图表通吃）、原地长按整行或纯划词，点「提问」即可。",
               "",
-              "【提问自动送达（Claude Code 等能在后台运行命令的客户端）】",
-              `请立刻用后台方式（如 Bash 的 run_in_background）运行提问监听器：${listenCommand}`,
+              "【提问自动送达】",
+              "- 若本会话已收到过 <channel source=\"...\"> 形式的伴读提问推送（Claude Code 以 channel 方式加载本服务时），提问会直接推送进来，无需下面的监听。",
+              `- 否则（Claude Code 等能在后台运行命令的客户端）请立刻用后台方式（如 Bash 的 run_in_background）运行提问监听器：${listenCommand}`,
+              "- 监听器启动时若已有未读提问（例如监听断开期间提交的），会立即带出，不会漏接；",
               "- 用户点「提问」后监听器会打印问题并退出，你会被自动唤醒：调用 get_pending_ppt_question 取回问题与选区截图后作答；",
               "- 每答完一题，都用同一条命令重新在后台挂起监听；",
               "- 输出 PPT_WAIT_TIMEOUT 时静默重新挂起，不必告诉用户；输出 PPT_BRIDGE_DOWN 时重新调用 start_web_reader。",
@@ -574,3 +631,10 @@ server.onclose = () => {
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(`ppt-study-reader MCP server started (dataDir=${DATA_DIR})`);
+
+// PPT_WEB_AUTOSTART=1：服务一启动就开浏览器伴读桥（channel 推送场景下，不必等模型调用 start_web_reader）。
+if (/^(1|true|yes)$/i.test(process.env.PPT_WEB_AUTOSTART || "")) {
+  ensureWebBridge(Number(process.env.PPT_WEB_PORT) || 4173)
+    .then((b) => console.error(`web reader auto-started at ${b.url}`))
+    .catch((err) => console.error("web reader auto-start failed:", err?.message || err));
+}

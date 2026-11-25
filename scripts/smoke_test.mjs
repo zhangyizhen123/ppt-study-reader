@@ -386,6 +386,13 @@ async function main() {
       assert.equal(waited.found, true);
       assert.match(waited.text, /长轮询提问/);
 
+      // wait_question.mjs 启动时若已有未读提问（监听断开期间提交的），立即带出，不会漏接
+      const missedRes = await runWaiter(baseUrl, ["--timeout", "30"]);
+      assert.equal(missedRes.code, 0);
+      assert.match(missedRes.out, /长轮询提问/);
+      const consumeRes = await client.rpc("tools/call", { name: "get_pending_ppt_question", arguments: {} });
+      assert.match(consumeRes.content[0].text, /长轮询提问/);
+
       // wait_question.mjs：收到提问打印并 exit 0；超时打印 PPT_WAIT_TIMEOUT；连不上打印 PPT_BRIDGE_DOWN
       const waiterDone = runWaiter(baseUrl, ["--timeout", "30"]);
       await waitListeners(1);
@@ -394,6 +401,7 @@ async function main() {
       assert.equal(waiterRes.code, 0);
       assert.match(waiterRes.out, /PPT_QUESTION_RECEIVED/);
       assert.match(waiterRes.out, /监听器提问/);
+      await client.rpc("tools/call", { name: "get_pending_ppt_question", arguments: {} });
       const timeoutRes = await runWaiter(baseUrl, ["--timeout", "2"]);
       assert.equal(timeoutRes.code, 0);
       assert.match(timeoutRes.out, /PPT_WAIT_TIMEOUT/);

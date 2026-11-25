@@ -7,6 +7,7 @@
 // - 用户在浏览器里点「提问」→ 打印问题并以 0 退出（后台任务结束会唤醒模型去回答）；
 // - 总时长超时 → 打印 PPT_WAIT_TIMEOUT 并退出（模型应静默重新挂起）；
 // - 伴读服务连不上 → 打印 PPT_BRIDGE_DOWN 并以 2 退出。
+// 启动时若已有「未读」提问（例如监听断开期间用户点了提问），会立即返回它，不会漏接。
 // 只依赖 Node 内置模块（Node >= 18 的全局 fetch）。
 
 function parseArgs(argv) {
@@ -38,14 +39,16 @@ function formatQuestion(q) {
   lines.push(
     "",
     "→ 给助手：请调用 MCP 工具 get_pending_ppt_question 取回问题与选区截图后作答；" +
-      "答完后用同一条命令在后台重新挂起本监听器，以便接收下一个提问。",
+      "答完后用同一条命令在后台重新挂起本监听器，以便接收下一个提问。" +
+      "（若同一问题已通过 <channel source=\"ppt_study_reader\"> 推送送达并已作答，忽略本条，且本会话不必再挂监听。）",
   );
   return lines.join("\n");
 }
 
 async function main() {
   const { url, timeout } = parseArgs(process.argv.slice(2));
-  const since = new Date().toISOString();
+  // 不带 since：服务端返回任何尚未被 get_pending_ppt_question 取走的提问。
+  // 旧实现用「监听启动时刻」作 since，监听断开期间提交的问题会被永久跳过。
   const deadline = Date.now() + timeout * 1000;
   let failSince = 0;
 
@@ -54,7 +57,7 @@ async function main() {
     const hold = Math.min(25, remainSec);
     try {
       const resp = await fetch(
-        `${url}/api/wait?since=${encodeURIComponent(since)}&hold=${hold}`,
+        `${url}/api/wait?hold=${hold}`,
         { signal: AbortSignal.timeout((hold + 15) * 1000) },
       );
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);

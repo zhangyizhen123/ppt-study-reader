@@ -3263,8 +3263,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path4) {
-      let input = path4;
+    function removeDotSegments(path5) {
+      let input = path5;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3338,11 +3338,11 @@ var require_utils = __commonJS({
       }
       return output.join("");
     }
-    function removeDotSegmentsRelative(path4) {
-      if (path4 === "" || path4[0] === "/") {
-        return removeDotSegments(path4);
+    function removeDotSegmentsRelative(path5) {
+      if (path5 === "" || path5[0] === "/") {
+        return removeDotSegments(path5);
       }
-      const segments = path4.split("/");
+      const segments = path5.split("/");
       const last = segments.length - 1;
       const output = [];
       let trailingDirectory = false;
@@ -3705,8 +3705,8 @@ var require_schemes = __commonJS({
       }
       if (wsComponent.resourceName) {
         const queryIndex = wsComponent.resourceName.indexOf("?");
-        const path4 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
-        wsComponent.path = path4 && path4 !== "/" ? path4 : void 0;
+        const path5 = queryIndex === -1 ? wsComponent.resourceName : wsComponent.resourceName.slice(0, queryIndex);
+        wsComponent.path = path5 && path5 !== "/" ? path5 : void 0;
         wsComponent.query = queryIndex === -1 ? void 0 : wsComponent.resourceName.slice(queryIndex + 1);
         wsComponent.resourceName = void 0;
       }
@@ -7257,10 +7257,8 @@ var require_dist = __commonJS({
 });
 
 // server/index.mjs
-import crypto2 from "node:crypto";
 import fs4 from "node:fs";
-import os2 from "node:os";
-import path3 from "node:path";
+import path4 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // node_modules/zod/v4/core/core.js
@@ -7458,10 +7456,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path4) {
-  if (!path4)
+function getElementAtPath(obj, path5) {
+  if (!path5)
     return obj;
-  return path4.reduce((acc, key) => acc?.[key], obj);
+  return path5.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7781,11 +7779,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path4, issues) {
+function prefixIssues(path5, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path4);
+    iss.path.unshift(path5);
     return iss;
   });
 }
@@ -15100,11 +15098,27 @@ async function startWebBridge(core2, { port = 4173, uiHtmlPath }) {
   };
 }
 
+// server/data_dir.mjs
+import crypto2 from "node:crypto";
+import os2 from "node:os";
+import path3 from "node:path";
+function courseDataKey(dir) {
+  const resolved = path3.resolve(dir);
+  const norm = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const hash = crypto2.createHash("sha1").update(norm).digest("hex").slice(0, 8);
+  const base = path3.basename(resolved).replace(/[^\p{L}\p{N}_.-]+/gu, "_").slice(0, 40) || "course";
+  return `${base}-${hash}`;
+}
+function defaultDataDir(courseDir) {
+  const base = path3.join(os2.homedir(), ".ppt-study-reader-data");
+  return courseDir ? path3.join(base, courseDataKey(courseDir)) : path3.join(base, "default");
+}
+
 // server/index.mjs
 applyToolEnv();
-var __dirname = path3.dirname(fileURLToPath(import.meta.url));
-var PLUGIN_ROOT = path3.resolve(__dirname, "..");
-var WAIT_SCRIPT_PATH = path3.join(PLUGIN_ROOT, "scripts", "wait_question.mjs");
+var __dirname = path4.dirname(fileURLToPath(import.meta.url));
+var PLUGIN_ROOT = path4.resolve(__dirname, "..");
+var WAIT_SCRIPT_PATH = path4.join(PLUGIN_ROOT, "scripts", "wait_question.mjs");
 function dirHasPdf(dir) {
   try {
     return fs4.readdirSync(dir).some((f) => f.toLowerCase().endsWith(".pdf") && !f.startsWith("."));
@@ -15113,13 +15127,6 @@ function dirHasPdf(dir) {
   }
 }
 var ENV_COURSE_DIR = (process.env.PPT_COURSE_DIR || "").trim() || (dirHasPdf(process.cwd()) ? process.cwd() : "");
-function courseDataKey(dir) {
-  const resolved = path3.resolve(dir);
-  const norm = process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  const hash = crypto2.createHash("sha1").update(norm).digest("hex").slice(0, 8);
-  const base = path3.basename(resolved).replace(/[^\p{L}\p{N}_.-]+/gu, "_").slice(0, 40) || "course";
-  return `${base}-${hash}`;
-}
 function parseArgs() {
   let dataDir = "";
   for (const arg of process.argv.slice(2)) {
@@ -15128,13 +15135,12 @@ function parseArgs() {
     }
   }
   if (!dataDir) {
-    const base = path3.join(os2.homedir(), ".ppt-study-reader-data");
-    dataDir = ENV_COURSE_DIR ? path3.join(base, courseDataKey(ENV_COURSE_DIR)) : path3.join(base, "default");
+    dataDir = defaultDataDir(ENV_COURSE_DIR);
   }
   return { dataDir };
 }
 var { dataDir: DATA_DIR } = parseArgs();
-var UI_HTML_PATH = path3.join(PLUGIN_ROOT, "ui", "dist", "app.html");
+var UI_HTML_PATH = path4.join(PLUGIN_ROOT, "ui", "dist", "app.html");
 var APP_URI = "ui://ppt-reader/app.html";
 var MIME_TYPE = "text/html;profile=mcp-app";
 var core = createPptCore({
@@ -15144,10 +15150,63 @@ var core = createPptCore({
   envAnnotationsPath: process.env.PPT_ANNOTATIONS_PATH || ""
 });
 var webBridge = null;
+var CHANNEL_INSTRUCTIONS = [
+  'ppt-study-reader\uFF1A\u82E5\u672C\u4F1A\u8BDD\u4EE5 channel \u65B9\u5F0F\u52A0\u8F7D\u4E86\u672C\u670D\u52A1\uFF0C\u7528\u6237\u5728\u6D4F\u89C8\u5668 PPT \u4F34\u8BFB\u91CC\u70B9\u300C\u63D0\u95EE\u300D\u65F6\uFF0C\u4F1A\u4EE5 <channel source="..."> \u4E8B\u4EF6\u63A8\u9001\u8FDB\u4F1A\u8BDD\uFF0C\u5185\u5BB9\u5373\u3010PPT\u4F34\u8BFB\u63D0\u95EE\u3011\u3002\u6CA1\u6709\u6536\u5230\u8FC7\u8FD9\u79CD\u63A8\u9001\u65F6\uFF0C\u6309 start_web_reader \u8FD4\u56DE\u7684\u8BF4\u660E\u6302\u540E\u53F0\u76D1\u542C\u3002',
+  "\u6536\u5230\u540E\uFF1A\u5E26\u9009\u533A\u622A\u56FEID\u65F6\u5148\u8C03\u7528 read_ppt_crop \u770B\u56FE\uFF0C\u518D\u6309\u9879\u76EE\u7B54\u7591\u89C4\u5219\u4F5C\u7B54\uFF1B\u968F\u540E\u8C03\u7528 get_pending_ppt_question({ markConsumed: true }) \u6216\u76F4\u63A5\u5FFD\u7565\u5747\u53EF\uFF08\u63A8\u9001\u5185\u5BB9\u5DF2\u5B8C\u6574\uFF09\u3002",
+  "\u4E00\u65E6\u672C\u4F1A\u8BDD\u6536\u5230\u8FC7\u8FD9\u79CD\u63A8\u9001\uFF0C\u8BF4\u660E\u63A8\u9001\u901A\u9053\u53EF\u7528\uFF1A\u4E0D\u5FC5\u518D\u5728\u540E\u53F0\u8FD0\u884C listenCommand \u76D1\u542C\uFF1B\u82E5\u4E4B\u524D\u5DF2\u6302\u7740\u76D1\u542C\uFF0C\u53EF\u505C\u6389\u5B83\uFF0C\u5B83\u5BF9\u540C\u4E00\u95EE\u9898\u7684\u91CD\u590D\u901A\u77E5\u76F4\u63A5\u5FFD\u7565\u3002"
+].join("\n");
 var server = new Server(
   { name: "ppt-study-reader", version: "1.0.0" },
-  { capabilities: { tools: {}, resources: {}, prompts: {} } }
+  {
+    capabilities: {
+      tools: {},
+      resources: {},
+      prompts: {},
+      experimental: { "claude/channel": {} }
+    },
+    instructions: CHANNEL_INSTRUCTIONS
+  }
 );
+async function pushQuestionToChannel(entry) {
+  const meta = { deck: entry.deck || "", page: String(entry.page || "") };
+  if (entry.cropId) meta.crop_id = entry.cropId;
+  try {
+    await server.notification({
+      method: "notifications/claude/channel",
+      params: { content: entry.text || entry.question || "(\u7A7A\u95EE\u9898)", meta }
+    });
+    return true;
+  } catch (err) {
+    console.error("channel push failed:", err?.message || err);
+    return false;
+  }
+}
+async function ensureWebBridge(port = 4173) {
+  if (!webBridge) {
+    webBridge = await startWebBridge(core, { port, uiHtmlPath: UI_HTML_PATH });
+  }
+  return webBridge;
+}
+var PENDING_FILE = path4.join(DATA_DIR, "pending_question.json");
+var lastPushedSavedAt = (() => {
+  try {
+    return JSON.parse(fs4.readFileSync(PENDING_FILE, "utf8")).savedAt || "";
+  } catch {
+    return "";
+  }
+})();
+fs4.watchFile(PENDING_FILE, { interval: 700, persistent: false }, () => {
+  let entry;
+  try {
+    entry = JSON.parse(fs4.readFileSync(PENDING_FILE, "utf8"));
+  } catch {
+    return;
+  }
+  if (!entry || !entry.text || entry.consumed || !entry.savedAt) return;
+  if (entry.savedAt === lastPushedSavedAt) return;
+  lastPushedSavedAt = entry.savedAt;
+  pushQuestionToChannel(entry);
+});
 var TOOLS = [
   {
     name: "open_ppt_reader",
@@ -15463,10 +15522,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         await core.openReader(args);
       }
       const list = await core.listDecks();
-      if (!webBridge) {
-        const reqPort = Number.isInteger(args.port) ? args.port : 4173;
-        webBridge = await startWebBridge(core, { port: reqPort, uiHtmlPath: UI_HTML_PATH });
-      }
+      await ensureWebBridge(Number.isInteger(args.port) ? args.port : 4173);
       const statusHint = list.configured ? `\u5F53\u524D\u5DF2\u52A0\u8F7D\u8BFE\u7A0B\u76EE\u5F55\uFF1A${list.courseDir}\uFF08\u5171 ${list.decks.length} \u4EFD PDF\uFF0C${list.totalPages} \u9875\uFF09\u3002` : "\u63D0\u793A\uFF1A\u5F53\u524D\u5C1A\u672A\u914D\u7F6E\u8BFE\u7A0B\u76EE\u5F55\uFF0C\u8BF7\u5148\u4F20 courseDir \u53C2\u6570\u6216\u544A\u77E5\u6211\u4F60\u7684 PDF \u6587\u4EF6\u5939\u8DEF\u5F84\u3002";
       const listenCommand = `node "${WAIT_SCRIPT_PATH.replace(/\\/g, "/")}" --url ${webBridge.url}`;
       return {
@@ -15479,8 +15535,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               "",
               "\u7528\u6237\u5728\u6D4F\u89C8\u5668\u91CC\u5DE6\u952E\u62D6\u62FD\u6846\u9009\uFF08\u6587\u5B57/\u56FE\u8868\u901A\u5403\uFF09\u3001\u539F\u5730\u957F\u6309\u6574\u884C\u6216\u7EAF\u5212\u8BCD\uFF0C\u70B9\u300C\u63D0\u95EE\u300D\u5373\u53EF\u3002",
               "",
-              "\u3010\u63D0\u95EE\u81EA\u52A8\u9001\u8FBE\uFF08Claude Code \u7B49\u80FD\u5728\u540E\u53F0\u8FD0\u884C\u547D\u4EE4\u7684\u5BA2\u6237\u7AEF\uFF09\u3011",
-              `\u8BF7\u7ACB\u523B\u7528\u540E\u53F0\u65B9\u5F0F\uFF08\u5982 Bash \u7684 run_in_background\uFF09\u8FD0\u884C\u63D0\u95EE\u76D1\u542C\u5668\uFF1A${listenCommand}`,
+              "\u3010\u63D0\u95EE\u81EA\u52A8\u9001\u8FBE\u3011",
+              '- \u82E5\u672C\u4F1A\u8BDD\u5DF2\u6536\u5230\u8FC7 <channel source="..."> \u5F62\u5F0F\u7684\u4F34\u8BFB\u63D0\u95EE\u63A8\u9001\uFF08Claude Code \u4EE5 channel \u65B9\u5F0F\u52A0\u8F7D\u672C\u670D\u52A1\u65F6\uFF09\uFF0C\u63D0\u95EE\u4F1A\u76F4\u63A5\u63A8\u9001\u8FDB\u6765\uFF0C\u65E0\u9700\u4E0B\u9762\u7684\u76D1\u542C\u3002',
+              `- \u5426\u5219\uFF08Claude Code \u7B49\u80FD\u5728\u540E\u53F0\u8FD0\u884C\u547D\u4EE4\u7684\u5BA2\u6237\u7AEF\uFF09\u8BF7\u7ACB\u523B\u7528\u540E\u53F0\u65B9\u5F0F\uFF08\u5982 Bash \u7684 run_in_background\uFF09\u8FD0\u884C\u63D0\u95EE\u76D1\u542C\u5668\uFF1A${listenCommand}`,
+              "- \u76D1\u542C\u5668\u542F\u52A8\u65F6\u82E5\u5DF2\u6709\u672A\u8BFB\u63D0\u95EE\uFF08\u4F8B\u5982\u76D1\u542C\u65AD\u5F00\u671F\u95F4\u63D0\u4EA4\u7684\uFF09\uFF0C\u4F1A\u7ACB\u5373\u5E26\u51FA\uFF0C\u4E0D\u4F1A\u6F0F\u63A5\uFF1B",
               "- \u7528\u6237\u70B9\u300C\u63D0\u95EE\u300D\u540E\u76D1\u542C\u5668\u4F1A\u6253\u5370\u95EE\u9898\u5E76\u9000\u51FA\uFF0C\u4F60\u4F1A\u88AB\u81EA\u52A8\u5524\u9192\uFF1A\u8C03\u7528 get_pending_ppt_question \u53D6\u56DE\u95EE\u9898\u4E0E\u9009\u533A\u622A\u56FE\u540E\u4F5C\u7B54\uFF1B",
               "- \u6BCF\u7B54\u5B8C\u4E00\u9898\uFF0C\u90FD\u7528\u540C\u4E00\u6761\u547D\u4EE4\u91CD\u65B0\u5728\u540E\u53F0\u6302\u8D77\u76D1\u542C\uFF1B",
               "- \u8F93\u51FA PPT_WAIT_TIMEOUT \u65F6\u9759\u9ED8\u91CD\u65B0\u6302\u8D77\uFF0C\u4E0D\u5FC5\u544A\u8BC9\u7528\u6237\uFF1B\u8F93\u51FA PPT_BRIDGE_DOWN \u65F6\u91CD\u65B0\u8C03\u7528 start_web_reader\u3002",
@@ -15624,3 +15682,6 @@ server.onclose = () => {
 var transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(`ppt-study-reader MCP server started (dataDir=${DATA_DIR})`);
+if (/^(1|true|yes)$/i.test(process.env.PPT_WEB_AUTOSTART || "")) {
+  ensureWebBridge(Number(process.env.PPT_WEB_PORT) || 4173).then((b) => console.error(`web reader auto-started at ${b.url}`)).catch((err) => console.error("web reader auto-start failed:", err?.message || err));
+}

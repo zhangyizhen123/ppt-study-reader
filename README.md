@@ -130,7 +130,42 @@ Code 标签页显示不了内嵌界面，所以改用浏览器伴读：
 2. 你在浏览器里框选、长按或划词后点 **提问**，页面提示「已送达 AI」。
 3. 监听器随即退出，Claude 被自动唤醒，调用 `get_pending_ppt_question` 拿到问题和选区截图后作答，答完再重新挂起监听。
 
-原理：MCP 服务没法主动往对话里发消息，但 Claude Code 的后台命令结束时会唤醒模型，监听器就是利用这一点。如果后台没有挂监听器，提问会照旧保存并复制到剪贴板。
+原理：Claude Code 的后台命令结束时会唤醒模型，监听器就是利用这一点。如果后台没有挂监听器，提问会照旧保存并复制到剪贴板。监听器启动时若已有未读提问（比如监听断开期间点的），会立即带出，不会漏接。
+
+**方式二：channel 直接推送（终端 CLI，研究预览）**
+
+本服务声明了 Claude Code 的 `claude/channel` 实验能力。用终端启动时加上开发 channel 参数，浏览器里点「提问」就会直接推送进会话，不需要后台监听器：
+
+```bash
+claude --dangerously-load-development-channels server:ppt_study_reader
+```
+
+- `server:` 后面写你在 `.mcp.json` 里给本服务起的名字；启动时会弹一次确认框。
+- 目前只有终端 CLI 能这样启动；桌面版 Code 标签页仍走上面的监听器方式。
+- 每个会话（包括 side chat）都会各起一个服务进程，它们都盯着同一份 `pending_question.json`，所以推送不依赖谁占着 4173 端口；没注册 channel 的会话会静默丢弃推送。
+- 需要 claude.ai 登录或 Console API Key；Team / Enterprise 组织需管理员先开启 Channels。
+- 可选环境变量 `PPT_WEB_AUTOSTART=1`：服务启动即开浏览器伴读（不用等模型调用 `start_web_reader`）。注意多个会话同时开启时，只有先启动的那个占用 4173。
+
+**会话重启后自动恢复（SessionStart hook）**
+
+Claude Code 进程重启（应用重启、休眠恢复、会话重新加载）时，后台监听会随之失效。在课程目录的 `.claude/settings.json` 里加上：
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "resume|compact",
+        "hooks": [
+          { "type": "command", "command": "node \"<仓库路径>/scripts/session_start_hook.mjs\" \"--course-dir=<课程目录>\"", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+会话恢复时，hook 会提醒 Claude 重新启动伴读并挂上监听，并带上断线期间提交、尚未读取的提问。只在 `resume` / `compact` 时触发，全新会话（包括 side chat）不会自动挂监听，避免多个会话对同一提问重复作答。
 
 ---
 
@@ -219,6 +254,7 @@ ppt-study-reader/
 │   ├── crop_helper.py                 # 选区局部高清截图裁剪
 │   ├── _tools.py                      # Python 脚本共用的 poppler 定位与 UTF-8 输出
 │   ├── wait_question.mjs              # 浏览器提问监听器（Claude Code 后台挂起，提问自动送达）
+│   ├── session_start_hook.mjs         # SessionStart hook：会话恢复后提醒重挂监听、补收断线期间的提问
 │   ├── setup_clients.mjs              # Claude（Chat / Code）/ Codex / Antigravity 配置生成器
 │   ├── setup_claude_code.mjs          # Claude Code 课程目录配置（.mcp.json / CLAUDE.md / Skill）
 │   ├── build_ui.mjs                   # esbuild 单文件打包脚本（UI）
