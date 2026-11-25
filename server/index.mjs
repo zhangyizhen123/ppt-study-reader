@@ -102,11 +102,27 @@ async function pushQuestionToChannel(entry) {
   }
 }
 
+let webBridgeStarting = null; // 自启正在抢端口时的 Promise，避免与 start_web_reader 并发各起一个
 async function ensureWebBridge(port = 4173) {
-  if (!webBridge) {
-    webBridge = await startWebBridge(core, { port, uiHtmlPath: UI_HTML_PATH });
-  }
+  if (webBridgeStarting) await webBridgeStarting.catch(() => {});
+  if (webBridge) return webBridge;
+  // 端口已被同一课程的另一个会话（自启或 side chat）占着：直接复用，浏览器地址保持不变
+  const shared = await probeSharedBridge(port);
+  if (shared) return shared;
+  webBridge = await startWebBridge(core, { port, uiHtmlPath: UI_HTML_PATH, instanceId: DATA_DIR });
   return webBridge;
+}
+
+async function probeSharedBridge(port) {
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    const resp = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1500) });
+    const json = await resp.json();
+    if (json && json.ok && json.instanceId === DATA_DIR) return { url, port, shared: true };
+  } catch {
+    // 没人占或不是本课程的伴读服务
+  }
+  return null;
 }
 
 // 推送不依赖「谁占着 4173 端口」：每个会话（含 side chat）都会各起一个本服务进程，
@@ -461,17 +477,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         await core.openReader(args);
       }
       const list = await core.listDecks();
-      await ensureWebBridge(Number.isInteger(args.port) ? args.port : 4173);
+      const bridge = await ensureWebBridge(Number.isInteger(args.port) ? args.port : 4173);
       const statusHint = list.configured
         ? `当前已加载课程目录：${list.courseDir}（共 ${list.decks.length} 份 PDF，${list.totalPages} 页）。`
         : "提示：当前尚未配置课程目录，请先传 courseDir 参数或告知我你的 PDF 文件夹路径。";
-      const listenCommand = `node "${WAIT_SCRIPT_PATH.replace(/\\/g, "/")}" --url ${webBridge.url}`;
+      const listenCommand = `node "${WAIT_SCRIPT_PATH.replace(/\\/g, "/")}" --url ${bridge.url}`;
       return {
         content: [
           {
             type: "text",
             text: [
-              `PPT 伴读浏览器交互视图已启动：${webBridge.url}`,
+              `PPT 伴读浏览器交互视图已启动：${bridge.url}`,
               statusHint,
               "",
               "用户在浏览器里左键拖拽框选（文字/图表通吃）、原地长按整行或纯划词，点「提问」即可。",
@@ -489,8 +505,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           },
         ],
         structuredContent: {
-          url: webBridge.url,
-          port: webBridge.port,
+          url: bridge.url,
+          port: bridge.port,
           listenCommand,
           configured: list.configured,
           courseDir: list.courseDir,
@@ -632,9 +648,34 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(`ppt-study-reader MCP server started (dataDir=${DATA_DIR})`);
 
-// PPT_WEB_AUTOSTART=1：服务一启动就开浏览器伴读桥（channel 推送场景下，不必等模型调用 start_web_reader）。
+// PPT_WEB_AUTOSTART=1：服务一启动就开浏览器伴读桥，固定端口（默认 4173）。
+// 这样关掉 App 再打开，浏览器里留着的伴读页会自动连回来，不必等模型调用 start_web_reader。
+// 多个会话（含 side chat）同时运行时只有一个能占住端口；其余每隔几秒重试，
+// 占着端口的会话退出后由下一个接手。提问都落在同一个 dataDir，谁占端口都一样。
 if (/^(1|true|yes)$/i.test(process.env.PPT_WEB_AUTOSTART || "")) {
-  ensureWebBridge(Number(process.env.PPT_WEB_PORT) || 4173)
-    .then((b) => console.error(`web reader auto-started at ${b.url}`))
-    .catch((err) => console.error("web reader auto-start failed:", err?.message || err));
+  const autoPort = Number(process.env.PPT_WEB_PORT) || 4173;
+  const tryAutostart = async () => {
+    if (webBridge) return;
+    try {
+      webBridgeStarting = startWebBridge(core, {
+        port: autoPort,
+        uiHtmlPath: UI_HTML_PATH,
+        strictPort: true,
+        instanceId: DATA_DIR,
+      });
+      const bridge = await webBridgeStarting;
+      if (webBridge) await bridge.close(); // 期间已被 start_web_reader 起好，保留那个
+      else webBridge = bridge;
+      console.error(`web reader auto-started at ${webBridge.url}`);
+    } catch (err) {
+      if (err?.code !== "EADDRINUSE") {
+        console.error("web reader auto-start failed:", err?.message || err);
+        return;
+      }
+      setTimeout(tryAutostart, 4000).unref();
+    } finally {
+      webBridgeStarting = null;
+    }
+  };
+  tryAutostart();
 }

@@ -1445,6 +1445,36 @@ async function init() {
   }
 
   await refreshDecksAndGo(pendingInitDeck, pendingInitPage, pendingInitFilter);
+  if (isWebBridge) watchBridgeConnection();
+}
+
+// 浏览器模式：伴读服务跟着 Claude 的会话进程走，关掉 Claude 它就停了。
+// 这里定时探测，断开时显示提示条；服务重新起来（重新打开 Claude）后自动刷新，
+// 阅读位置由服务端保存，刷新后回到原来那一页。
+function watchBridgeConnection() {
+  let down = false;
+  const banner = document.createElement("div");
+  banner.className = "bridge-down-banner";
+  banner.textContent =
+    "伴读服务已断开：重新打开 Claude（本课程目录的会话）后会自动连回，无需手动刷新。";
+  const tick = async () => {
+    let ok = false;
+    try {
+      const resp = await fetch("/api/health", { cache: "no-store" });
+      ok = resp.ok;
+    } catch {
+      ok = false;
+    }
+    if (!ok && !down) {
+      down = true;
+      document.body.appendChild(banner);
+    } else if (ok && down) {
+      location.reload();
+      return;
+    }
+    window.setTimeout(tick, down ? 2000 : 5000);
+  };
+  window.setTimeout(tick, 5000);
 }
 
 init().catch((err) => {

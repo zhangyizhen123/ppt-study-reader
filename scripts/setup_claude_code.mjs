@@ -75,7 +75,7 @@ export function setupClaudeCode({ repoRoot, serverEntry, courseDir, apply, skill
   const entry = {
     command: "node",
     args: [serverEntry],
-    env: { PPT_COURSE_DIR: courseDir, PPT_ANNOTATIONS_PATH: "" },
+    env: { PPT_COURSE_DIR: courseDir, PPT_ANNOTATIONS_PATH: "", PPT_WEB_AUTOSTART: "1" },
   };
   console.log(`  ${mcpPath}  ← 合并 mcpServers.ppt_study_reader`);
   console.log(`  ${settingsPath}  ← enabledMcpjsonServers 加入 ppt_study_reader（免去首次批准）`);

@@ -44,7 +44,10 @@ function sendJson(res, status, obj) {
 
 const MAX_HOLD_SECONDS = 55;
 
-export async function startWebBridge(core, { port = 4173, uiHtmlPath }) {
+export async function startWebBridge(
+  core,
+  { port = 4173, uiHtmlPath, strictPort = false, instanceId = "" },
+) {
   // Long-poll waiters (e.g. scripts/wait_question.mjs run in the background by Claude Code).
   const waiters = new Set();
 
@@ -91,7 +94,7 @@ export async function startWebBridge(core, { port = 4173, uiHtmlPath }) {
       }
 
       if (req.method === "GET" && url.pathname === "/api/health") {
-        sendJson(res, 200, { ok: true });
+        sendJson(res, 200, { ok: true, instanceId });
         return;
       }
 
@@ -198,7 +201,8 @@ export async function startWebBridge(core, { port = 4173, uiHtmlPath }) {
   try {
     actualPort = await listenOn(port);
   } catch (err) {
-    if (err && err.code === "EADDRINUSE" && port !== 0) {
+    // strictPort：端口被占就直接报错，不换随机端口（自启抢占固定端口时用）
+    if (err && err.code === "EADDRINUSE" && port !== 0 && !strictPort) {
       actualPort = await listenOn(0);
     } else {
       throw err;

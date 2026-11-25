@@ -144,7 +144,9 @@ claude --dangerously-load-development-channels server:ppt_study_reader
 - 目前只有终端 CLI 能这样启动；桌面版 Code 标签页仍走上面的监听器方式。
 - 每个会话（包括 side chat）都会各起一个服务进程，它们都盯着同一份 `pending_question.json`，所以推送不依赖谁占着 4173 端口；没注册 channel 的会话会静默丢弃推送。
 - 需要 claude.ai 登录或 Console API Key；Team / Enterprise 组织需管理员先开启 Channels。
-- 可选环境变量 `PPT_WEB_AUTOSTART=1`：服务启动即开浏览器伴读（不用等模型调用 `start_web_reader`）。注意多个会话同时开启时，只有先启动的那个占用 4173。
+- 环境变量 `PPT_WEB_AUTOSTART=1`（`setup:claude-code` 生成的 `.mcp.json` 默认开启）：服务一启动就在固定端口 4173 开浏览器伴读，不用等模型调用 `start_web_reader`。
+  - **关掉 Claude 再打开，浏览器里留着的伴读页会自动连回**：网页断线时顶部出现提示条，服务恢复后自动刷新，并回到原来那一页（阅读位置由服务端保存）。
+  - 多个会话（含 side chat）同时开着时只有一个占用 4173，其余会复用它；占用的会话退出后，另一个会在几秒内接手。
 
 **会话重启后自动恢复（SessionStart hook）**
 

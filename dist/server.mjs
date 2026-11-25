@@ -14942,7 +14942,7 @@ function sendJson(res, status, obj) {
   res.end(body);
 }
 var MAX_HOLD_SECONDS = 55;
-async function startWebBridge(core2, { port = 4173, uiHtmlPath }) {
+async function startWebBridge(core2, { port = 4173, uiHtmlPath, strictPort = false, instanceId = "" }) {
   const waiters = /* @__PURE__ */ new Set();
   function pendingSince(sinceMs) {
     const p = core2.getPendingQuestion({ markConsumed: false });
@@ -14982,7 +14982,7 @@ async function startWebBridge(core2, { port = 4173, uiHtmlPath }) {
         return;
       }
       if (req.method === "GET" && url.pathname === "/api/health") {
-        sendJson(res, 200, { ok: true });
+        sendJson(res, 200, { ok: true, instanceId });
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/tool") {
@@ -15080,7 +15080,7 @@ async function startWebBridge(core2, { port = 4173, uiHtmlPath }) {
   try {
     actualPort = await listenOn(port);
   } catch (err) {
-    if (err && err.code === "EADDRINUSE" && port !== 0) {
+    if (err && err.code === "EADDRINUSE" && port !== 0 && !strictPort) {
       actualPort = await listenOn(0);
     } else {
       throw err;
@@ -15181,11 +15181,25 @@ async function pushQuestionToChannel(entry) {
     return false;
   }
 }
+var webBridgeStarting = null;
 async function ensureWebBridge(port = 4173) {
-  if (!webBridge) {
-    webBridge = await startWebBridge(core, { port, uiHtmlPath: UI_HTML_PATH });
-  }
+  if (webBridgeStarting) await webBridgeStarting.catch(() => {
+  });
+  if (webBridge) return webBridge;
+  const shared = await probeSharedBridge(port);
+  if (shared) return shared;
+  webBridge = await startWebBridge(core, { port, uiHtmlPath: UI_HTML_PATH, instanceId: DATA_DIR });
   return webBridge;
+}
+async function probeSharedBridge(port) {
+  const url = `http://127.0.0.1:${port}`;
+  try {
+    const resp = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1500) });
+    const json = await resp.json();
+    if (json && json.ok && json.instanceId === DATA_DIR) return { url, port, shared: true };
+  } catch {
+  }
+  return null;
 }
 var PENDING_FILE = path4.join(DATA_DIR, "pending_question.json");
 var lastPushedSavedAt = (() => {
@@ -15522,15 +15536,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         await core.openReader(args);
       }
       const list = await core.listDecks();
-      await ensureWebBridge(Number.isInteger(args.port) ? args.port : 4173);
+      const bridge = await ensureWebBridge(Number.isInteger(args.port) ? args.port : 4173);
       const statusHint = list.configured ? `\u5F53\u524D\u5DF2\u52A0\u8F7D\u8BFE\u7A0B\u76EE\u5F55\uFF1A${list.courseDir}\uFF08\u5171 ${list.decks.length} \u4EFD PDF\uFF0C${list.totalPages} \u9875\uFF09\u3002` : "\u63D0\u793A\uFF1A\u5F53\u524D\u5C1A\u672A\u914D\u7F6E\u8BFE\u7A0B\u76EE\u5F55\uFF0C\u8BF7\u5148\u4F20 courseDir \u53C2\u6570\u6216\u544A\u77E5\u6211\u4F60\u7684 PDF \u6587\u4EF6\u5939\u8DEF\u5F84\u3002";
-      const listenCommand = `node "${WAIT_SCRIPT_PATH.replace(/\\/g, "/")}" --url ${webBridge.url}`;
+      const listenCommand = `node "${WAIT_SCRIPT_PATH.replace(/\\/g, "/")}" --url ${bridge.url}`;
       return {
         content: [
           {
             type: "text",
             text: [
-              `PPT \u4F34\u8BFB\u6D4F\u89C8\u5668\u4EA4\u4E92\u89C6\u56FE\u5DF2\u542F\u52A8\uFF1A${webBridge.url}`,
+              `PPT \u4F34\u8BFB\u6D4F\u89C8\u5668\u4EA4\u4E92\u89C6\u56FE\u5DF2\u542F\u52A8\uFF1A${bridge.url}`,
               statusHint,
               "",
               "\u7528\u6237\u5728\u6D4F\u89C8\u5668\u91CC\u5DE6\u952E\u62D6\u62FD\u6846\u9009\uFF08\u6587\u5B57/\u56FE\u8868\u901A\u5403\uFF09\u3001\u539F\u5730\u957F\u6309\u6574\u884C\u6216\u7EAF\u5212\u8BCD\uFF0C\u70B9\u300C\u63D0\u95EE\u300D\u5373\u53EF\u3002",
@@ -15548,8 +15562,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           }
         ],
         structuredContent: {
-          url: webBridge.url,
-          port: webBridge.port,
+          url: bridge.url,
+          port: bridge.port,
           listenCommand,
           configured: list.configured,
           courseDir: list.courseDir,
@@ -15683,5 +15697,29 @@ var transport = new StdioServerTransport();
 await server.connect(transport);
 console.error(`ppt-study-reader MCP server started (dataDir=${DATA_DIR})`);
 if (/^(1|true|yes)$/i.test(process.env.PPT_WEB_AUTOSTART || "")) {
-  ensureWebBridge(Number(process.env.PPT_WEB_PORT) || 4173).then((b) => console.error(`web reader auto-started at ${b.url}`)).catch((err) => console.error("web reader auto-start failed:", err?.message || err));
+  const autoPort = Number(process.env.PPT_WEB_PORT) || 4173;
+  const tryAutostart = async () => {
+    if (webBridge) return;
+    try {
+      webBridgeStarting = startWebBridge(core, {
+        port: autoPort,
+        uiHtmlPath: UI_HTML_PATH,
+        strictPort: true,
+        instanceId: DATA_DIR
+      });
+      const bridge = await webBridgeStarting;
+      if (webBridge) await bridge.close();
+      else webBridge = bridge;
+      console.error(`web reader auto-started at ${webBridge.url}`);
+    } catch (err) {
+      if (err?.code !== "EADDRINUSE") {
+        console.error("web reader auto-start failed:", err?.message || err);
+        return;
+      }
+      setTimeout(tryAutostart, 4e3).unref();
+    } finally {
+      webBridgeStarting = null;
+    }
+  };
+  tryAutostart();
 }
